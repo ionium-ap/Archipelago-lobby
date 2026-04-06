@@ -117,6 +117,8 @@
                             <span class="action-tag added-tag">added</span>
                         {% elif file.filename_after == "/dev/null" %}
                             <span class="action-tag removed-tag">removed</span>
+                        {% elif file.filename_before != file.filename_after %}
+                            <span class="action-tag renamed-tag">renamed from {{ file.filename_before }}</span>
                         {% else %}
                             <span class="action-tag changed-tag">changed</span>
                         {% endif %}

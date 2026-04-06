@@ -14,23 +14,63 @@ use super::{
 const CONTEXT_COLLAPSE_THRESHOLD: usize = 20;
 const CONTEXT_VISIBLE_LINES: usize = 3;
 
+const RENAME_SIMILARITY_THRESHOLD: f32 = 0.5;
+
 pub fn compute_file_tree_diff(
     old_tree: &FileTree,
     new_tree: &FileTree,
     annotations: &BTreeMap<String, Vec<Annotations>>,
 ) -> Vec<FileDiff> {
-    let all_files: BTreeSet<&PathBuf> = old_tree.keys().chain(new_tree.keys()).collect();
+    let mut deleted: Vec<&PathBuf> = Vec::new();
+    let mut added: Vec<&PathBuf> = Vec::new();
+    let mut common: Vec<&PathBuf> = Vec::new();
 
-    let mut result: Vec<FileDiff> = all_files
+    for path in old_tree.keys() {
+        if new_tree.contains_key(path) {
+            common.push(path);
+        } else {
+            deleted.push(path);
+        }
+    }
+    for path in new_tree.keys() {
+        if !old_tree.contains_key(path) {
+            added.push(path);
+        }
+    }
+
+    let renames = detect_renames(old_tree, new_tree, &deleted, &added);
+    let renamed_old: BTreeSet<&PathBuf> = renames.iter().map(|(o, _)| *o).collect();
+    let renamed_new: BTreeSet<&PathBuf> = renames.iter().map(|(_, n)| *n).collect();
+
+    let all_pairs: Vec<(&PathBuf, &PathBuf)> = common
+        .iter()
+        .map(|p| (*p, *p))
+        .chain(
+            deleted
+                .iter()
+                .filter(|p| !renamed_old.contains(*p))
+                .map(|p| (*p, *p)),
+        )
+        .chain(
+            added
+                .iter()
+                .filter(|p| !renamed_new.contains(*p))
+                .map(|p| (*p, *p)),
+        )
+        .chain(renames.iter().map(|(o, n)| (*o, *n)))
+        .collect();
+
+    let mut result: Vec<FileDiff> = all_pairs
         .into_iter()
         .par_bridge()
-        .filter_map(|filepath| {
-            let old = old_tree.get(filepath);
-            let new = new_tree.get(filepath);
-            let filename = filepath.to_string_lossy();
+        .filter_map(|(old_path, new_path)| {
+            let old = old_tree.get(old_path);
+            let new = new_tree.get(new_path);
+            let old_name = old_path.to_string_lossy();
+            let new_name = new_path.to_string_lossy();
 
             let file_annotations: Vec<TemplateAnnotation> = annotations
-                .get(filename.as_ref())
+                .get(new_name.as_ref())
                 .map(|anns| {
                     anns.iter()
                         .map(|a| TemplateAnnotation {
@@ -43,7 +83,7 @@ pub fn compute_file_tree_diff(
                 })
                 .unwrap_or_default();
 
-            diff_single_file(&filename, old, new, &file_annotations)
+            diff_single_file_renamed(&old_name, &new_name, old, new, &file_annotations)
         })
         .collect();
 
@@ -51,24 +91,93 @@ pub fn compute_file_tree_diff(
     result
 }
 
-fn diff_single_file(
-    filename: &str,
+fn detect_renames<'a>(
+    old_tree: &FileTree,
+    new_tree: &FileTree,
+    deleted: &[&'a PathBuf],
+    added: &[&'a PathBuf],
+) -> Vec<(&'a PathBuf, &'a PathBuf)> {
+    if deleted.is_empty() || added.is_empty() {
+        return Vec::new();
+    }
+
+    let mut renames: Vec<(&'a PathBuf, &'a PathBuf)> = Vec::new();
+    let mut matched_old: BTreeSet<&PathBuf> = BTreeSet::new();
+    let mut matched_new: BTreeSet<&PathBuf> = BTreeSet::new();
+
+    for &old_path in deleted {
+        for &new_path in added {
+            if matched_new.contains(new_path) {
+                continue;
+            }
+            if old_tree.get(old_path) == new_tree.get(new_path) {
+                renames.push((old_path, new_path));
+                matched_old.insert(old_path);
+                matched_new.insert(new_path);
+                break;
+            }
+        }
+    }
+
+    let remaining_old: Vec<&'a PathBuf> = deleted
+        .iter()
+        .filter(|p| !matched_old.contains(**p))
+        .copied()
+        .collect();
+    let remaining_new: Vec<&'a PathBuf> = added
+        .iter()
+        .filter(|p| !matched_new.contains(**p))
+        .copied()
+        .collect();
+
+    let mut similarity_matches: Vec<(f32, &'a PathBuf, &'a PathBuf)> = Vec::new();
+    for &old_path in &remaining_old {
+        let Some(FileContent::Text(old_text)) = old_tree.get(old_path) else {
+            continue;
+        };
+        for &new_path in &remaining_new {
+            let Some(FileContent::Text(new_text)) = new_tree.get(new_path) else {
+                continue;
+            };
+            let ratio = TextDiff::from_lines(old_text.as_str(), new_text.as_str()).ratio();
+            if ratio >= RENAME_SIMILARITY_THRESHOLD {
+                similarity_matches.push((ratio, old_path, new_path));
+            }
+        }
+    }
+
+    similarity_matches.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (_, old_path, new_path) in similarity_matches {
+        if matched_old.contains(old_path) || matched_new.contains(new_path) {
+            continue;
+        }
+        renames.push((old_path, new_path));
+        matched_old.insert(old_path);
+        matched_new.insert(new_path);
+    }
+
+    renames
+}
+
+fn diff_single_file_renamed(
+    old_filename: &str,
+    new_filename: &str,
     old: Option<&FileContent>,
     new: Option<&FileContent>,
     annotations: &[TemplateAnnotation],
 ) -> Option<FileDiff> {
     let (filename_before, filename_after) = match (old, new) {
         (None, None) => return None,
-        (None, Some(_)) => ("/dev/null".to_string(), filename.to_string()),
-        (Some(_), None) => (filename.to_string(), "/dev/null".to_string()),
-        (Some(_), Some(_)) => (filename.to_string(), filename.to_string()),
+        (None, Some(_)) => ("/dev/null".to_string(), new_filename.to_string()),
+        (Some(_), None) => (old_filename.to_string(), "/dev/null".to_string()),
+        (Some(_), Some(_)) => (old_filename.to_string(), new_filename.to_string()),
     };
 
     let is_binary =
         matches!(old, Some(FileContent::Binary(_))) || matches!(new, Some(FileContent::Binary(_)));
 
     if is_binary {
-        if old == new {
+        if old == new && filename_before == filename_after {
             return None;
         }
         return Some(FileDiff {
@@ -89,10 +198,18 @@ fn diff_single_file(
     };
 
     if old_text == new_text {
-        return None;
+        if filename_before == filename_after {
+            return None;
+        }
+        return Some(FileDiff {
+            filename_before,
+            filename_after,
+            is_binary: false,
+            lines: Vec::new(),
+        });
     }
 
-    let mut lines = build_diff_lines(old_text, new_text, filename, annotations);
+    let mut lines = build_diff_lines(old_text, new_text, new_filename, annotations);
     apply_word_highlighting(&mut lines);
     collapse_context_regions(&mut lines);
 
@@ -346,6 +463,52 @@ mod tests {
         assert_eq!(lines[3].old_line_number, Some(3));
         assert_eq!(lines[3].new_line_number, Some(3));
         assert_eq!(lines[3].line_type, LineType::Context);
+    }
+
+    #[test]
+    fn test_rename_exact_match() {
+        let (old, new) = make_trees(
+            &[("old_name.py", "content\n")],
+            &[("new_name.py", "content\n")],
+        );
+        let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].filename_before, "old_name.py");
+        assert_eq!(diffs[0].filename_after, "new_name.py");
+        assert!(
+            diffs[0].lines.is_empty()
+                || diffs[0]
+                    .lines
+                    .iter()
+                    .all(|l| l.line_type == LineType::Context)
+        );
+    }
+
+    #[test]
+    fn test_rename_with_modifications() {
+        let (old, new) = make_trees(
+            &[("old.py", "line1\nline2\nline3\nline4\nline5\n")],
+            &[("new.py", "line1\nchanged\nline3\nline4\nline5\n")],
+        );
+        let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].filename_before, "old.py");
+        assert_eq!(diffs[0].filename_after, "new.py");
+        assert!(diffs[0]
+            .lines
+            .iter()
+            .any(|l| l.line_type == LineType::Delete));
+        assert!(diffs[0].lines.iter().any(|l| l.line_type == LineType::Add));
+    }
+
+    #[test]
+    fn test_no_rename_below_threshold() {
+        let (old, new) = make_trees(
+            &[("old.py", "completely\ndifferent\ncontent\n")],
+            &[("new.py", "nothing\nin\ncommon\nhere\nat\nall\nwhatsoever\n")],
+        );
+        let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
+        assert_eq!(diffs.len(), 2);
     }
 
     #[test]
