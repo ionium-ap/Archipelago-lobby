@@ -706,6 +706,10 @@ async fn download_yaml<'a>(
         let Some(apworld) = index.worlds.get(apworld_name) else {
             Err(anyhow!("Unknown apworld"))?
         };
+        let parsed_version = Version::from_str(version)?;
+        if !apworld.versions.contains_key(&parsed_version) {
+            Err(anyhow!("Unknown version for this apworld"))?
+        }
         apworld.name.clone()
     };
 
