@@ -82,8 +82,11 @@ struct TreeCache(Mutex<lru::LruCache<String, Arc<apworld::FileTree>>>);
 #[template(path = "index.html")]
 struct IndexPage {
     task_id: String,
+    css_version: &'static str,
     apworld_diffs: Vec<ApworldDiff>,
 }
+
+const CSS_VERSION: &str = std::env!("CSS_VERSION");
 
 const BASE_MANUAL: &str = "manual_ultimatemarvelvscapcom3_manualteam";
 const BASE_MANUAL_PREFIX: &str = "base:";
@@ -196,6 +199,7 @@ async fn get_task_diffs(
 
     Ok(IndexPage {
         task_id: task_id.to_string(),
+        css_version: CSS_VERSION,
         apworld_diffs,
     })
 }

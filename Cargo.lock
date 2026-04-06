@@ -260,6 +260,7 @@ dependencies = [
  "syntect",
  "taskcluster",
  "tracing",
+ "walkdir",
  "zip",
 ]
 
