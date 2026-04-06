@@ -109,6 +109,8 @@
                                 {{ file.filename_after }}
                             {% elif file.filename_after == "/dev/null" %}
                                 {{ file.filename_before }}
+                            {% elif file.filename_before != file.filename_after %}
+                                {{ file.filename_before }} &rarr; {{ file.filename_after }}
                             {% else %}
                                 {{ file.filename_after }}
                             {% endif %}
@@ -118,7 +120,7 @@
                         {% elif file.filename_after == "/dev/null" %}
                             <span class="action-tag removed-tag">removed</span>
                         {% elif file.filename_before != file.filename_after %}
-                            <span class="action-tag renamed-tag">renamed from {{ file.filename_before }}</span>
+                            <span class="action-tag renamed-tag">renamed</span>
                         {% else %}
                             <span class="action-tag changed-tag">changed</span>
                         {% endif %}
