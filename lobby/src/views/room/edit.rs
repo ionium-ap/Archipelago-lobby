@@ -1,6 +1,4 @@
-use std::str::FromStr;
-
-use crate::db::{self, NewRoom, Room, RoomId, RoomTemplateId};
+use crate::db::{self, Room, RoomId, RoomTemplateId};
 use crate::error::{RedirectTo, Result, WithContext};
 use crate::index_manager::IndexManager;
 use crate::jobs::YamlValidationQueue;
@@ -15,9 +13,8 @@ use rocket::{get, post};
 
 use crate::{Context, TplContext};
 
-use crate::views::manifest_editor::manifest_from_form;
 use crate::views::room_settings::{
-    parse_date, validate_room_form, CreateRoomForm, RoomSettingsBuilder, RoomSettingsType,
+    validate_room_form, CreateRoomForm, RoomSettingsBuilder, RoomSettingsType,
 };
 
 #[derive(Template, WebTemplate)]
@@ -74,39 +71,14 @@ pub async fn create_room_submit<'a>(
     redirect_to.set("/create-room");
 
     validate_room_form(&mut room_form.room)?;
-    let room_manifest = {
+    let new_room = {
         let index = index_manager.index.read().await;
-        manifest_from_form(&room_form.room.me, &index)
-    }?;
-
-    let author_id = session.user_id();
-    let close_date = parse_date(room_form.room.close_date, room_form.room.tz_offset)?;
-    let new_room = NewRoom {
-        id: RoomId::new_v4(),
-        name: room_form.room.room_name.trim(),
-        close_date: close_date.naive_utc(),
-        description: room_form.room.room_description.trim(),
-        room_url: "",
-        author_id: Some(author_id),
-        yaml_validation: room_form.room.yaml_validation,
-        allow_unsupported: room_form.room.allow_unsupported,
-        yaml_limit_per_user: room_form
-            .room
-            .yaml_limit_per_user
-            .then_some(room_form.room.yaml_limit_per_user_nb),
-        yaml_limit_bypass_list: room_form
-            .room
-            .yaml_limit_bypass_list
-            .split(',')
-            .filter_map(|id| i64::from_str(id).ok())
-            .collect(),
-        manifest: db::Json(room_manifest),
-        show_apworlds: room_form.room.show_apworlds,
-        from_template_id: Some(from_template),
-        allow_invalid_yamls: room_form.room.allow_invalid_yamls,
-        meta_file: room_form.room.meta_file.clone(),
-        is_bundle_room: room_form.room.is_bundle_room,
-        locked: room_form.room.locked,
+        room_form.room.to_new_room(
+            RoomId::new_v4(),
+            &index,
+            Some(session.user_id()),
+            Some(from_template),
+        )?
     };
 
     let mut conn = ctx.db_pool.get().await?;
@@ -201,44 +173,14 @@ pub async fn edit_room_submit<'a>(
         return Err(anyhow::anyhow!("You're not allowed to edit this room").into());
     }
 
-    let old_resolved = {
-        let index = index_manager.index.read().await;
-        room.settings.manifest.resolve_with(&index).0
-    };
-
     validate_room_form(&mut room_form.room)?;
 
-    let room_manifest = {
+    let (old_resolved, new_room) = {
         let index = index_manager.index.read().await;
-        manifest_from_form(&room_form.room.me, &index)
-    }?;
-
-    let new_room = NewRoom {
-        id: room_id,
-        name: room_form.room.room_name.trim(),
-        description: room_form.room.room_description.trim(),
-        close_date: parse_date(room_form.room.close_date, room_form.room.tz_offset)?.naive_utc(),
-        room_url: room_form.room.room_url,
-        author_id: None, // (Skips updating that field)
-        yaml_validation: room_form.room.yaml_validation,
-        allow_unsupported: room_form.room.allow_unsupported,
-        yaml_limit_per_user: room_form
-            .room
-            .yaml_limit_per_user
-            .then_some(room_form.room.yaml_limit_per_user_nb),
-        yaml_limit_bypass_list: room_form
-            .room
-            .yaml_limit_bypass_list
-            .split(',')
-            .filter_map(|id| i64::from_str(id).ok())
-            .collect(),
-        manifest: db::Json(room_manifest),
-        show_apworlds: room_form.room.show_apworlds,
-        from_template_id: None,
-        allow_invalid_yamls: room_form.room.allow_invalid_yamls,
-        meta_file: room_form.room.meta_file.clone(),
-        is_bundle_room: room_form.room.is_bundle_room,
-        locked: room_form.room.locked,
+        let old_resolved = room.settings.manifest.resolve_with(&index).0;
+        // author_id and from_template_id are None to skip updating those fields.
+        let new_room = room_form.room.to_new_room(room_id, &index, None, None)?;
+        (old_resolved, new_room)
     };
 
     let room = db::update_room(&new_room, &mut conn).await?;

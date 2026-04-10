@@ -1,10 +1,10 @@
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::db::{Room, RoomSettings, RoomTemplate};
+use crate::db::{self, NewRoom, Room, RoomId, RoomSettings, RoomTemplate, RoomTemplateId};
 use crate::error::Result;
 use anyhow::anyhow;
-use apwm::Manifest;
+use apwm::{Index, Manifest};
 use askama::Template;
 use askama_web::WebTemplate;
 use chrono::{DateTime, TimeZone, Utc};
@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::TplContext;
 
-use super::manifest_editor::{ManifestForm, ManifestFormBuilder};
+use super::manifest_editor::{manifest_from_form, ManifestForm, ManifestFormBuilder};
 
 #[derive(FromForm, Debug)]
 pub struct CreateRoomForm<'a> {
@@ -40,6 +40,42 @@ pub struct RoomSettingsForm<'a> {
     pub meta_file: String,
     pub is_bundle_room: bool,
     pub locked: bool,
+}
+
+impl<'a> RoomSettingsForm<'a> {
+    pub fn to_new_room(
+        &self,
+        id: RoomId,
+        index: &Index,
+        author_id: Option<i64>,
+        from_template_id: Option<Option<RoomTemplateId>>,
+    ) -> Result<NewRoom<'a>> {
+        Ok(NewRoom {
+            id,
+            name: self.room_name.trim(),
+            close_date: parse_date(self.close_date, self.tz_offset)?.naive_utc(),
+            description: self.room_description.trim(),
+            room_url: self.room_url,
+            author_id,
+            yaml_validation: self.yaml_validation,
+            allow_unsupported: self.allow_unsupported,
+            yaml_limit_per_user: self
+                .yaml_limit_per_user
+                .then_some(self.yaml_limit_per_user_nb),
+            yaml_limit_bypass_list: self
+                .yaml_limit_bypass_list
+                .split(',')
+                .filter_map(|id| i64::from_str(id).ok())
+                .collect(),
+            manifest: db::Json(manifest_from_form(&self.me, index)?),
+            show_apworlds: self.show_apworlds,
+            from_template_id,
+            allow_invalid_yamls: self.allow_invalid_yamls,
+            meta_file: self.meta_file.clone(),
+            is_bundle_room: self.is_bundle_room,
+            locked: self.locked,
+        })
+    }
 }
 
 pub fn parse_date(date: &str, tz_offset: i32) -> Result<DateTime<Utc>> {
