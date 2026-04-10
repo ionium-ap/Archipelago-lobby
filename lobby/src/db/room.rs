@@ -36,34 +36,59 @@ pub struct NewRoom<'a> {
     pub locked: bool,
 }
 
-macro_rules! define_settings_struct {
-    ($name:ident, $table:path) => {
+macro_rules! define_settings_structs {
+    (
+        struct $primary:ident = $primary_table:path,
+        struct $secondary:ident = $secondary_table:path,
+        {
+            $($field:ident : $ty:ty),* $(,)?
+        }
+    ) => {
         #[derive(Debug, Clone, Queryable, Selectable)]
-        #[diesel(table_name = $table)]
-        pub struct $name {
-            pub name: String,
-            pub close_date: NaiveDateTime,
-            pub description: String,
-            pub room_url: String,
-            pub author_id: i64,
-            pub yaml_validation: bool,
-            pub allow_unsupported: bool,
-            pub yaml_limit_per_user: Option<i32>,
-            pub yaml_limit_bypass_list: Vec<i64>,
-            pub manifest: Json<Manifest>,
-            pub show_apworlds: bool,
-            pub created_at: NaiveDateTime,
-            pub updated_at: NaiveDateTime,
-            pub allow_invalid_yamls: bool,
-            pub meta_file: String,
-            pub is_bundle_room: bool,
-            pub locked: bool,
+        #[diesel(table_name = $primary_table)]
+        pub struct $primary {
+            $(pub $field: $ty,)*
+        }
+
+        #[derive(Debug, Clone, Queryable, Selectable)]
+        #[diesel(table_name = $secondary_table)]
+        pub struct $secondary {
+            $(pub $field: $ty,)*
+        }
+
+        impl From<$secondary> for $primary {
+            fn from(s: $secondary) -> $primary {
+                $primary {
+                    $($field: s.$field,)*
+                }
+            }
         }
     };
 }
 
-define_settings_struct!(RoomSettings, rooms);
-define_settings_struct!(RoomTemplateSettings, room_templates);
+define_settings_structs! {
+    struct RoomSettings = rooms,
+    struct RoomTemplateSettings = room_templates,
+    {
+        name: String,
+        close_date: NaiveDateTime,
+        description: String,
+        room_url: String,
+        author_id: i64,
+        yaml_validation: bool,
+        allow_unsupported: bool,
+        yaml_limit_per_user: Option<i32>,
+        yaml_limit_bypass_list: Vec<i64>,
+        manifest: Json<Manifest>,
+        show_apworlds: bool,
+        created_at: NaiveDateTime,
+        updated_at: NaiveDateTime,
+        allow_invalid_yamls: bool,
+        meta_file: String,
+        is_bundle_room: bool,
+        locked: bool,
+    }
+}
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = rooms)]
@@ -82,30 +107,6 @@ pub struct RoomTemplate {
     pub settings: RoomTemplateSettings,
     pub global: bool,
     pub tpl_name: String,
-}
-
-impl From<RoomTemplateSettings> for RoomSettings {
-    fn from(settings: RoomTemplateSettings) -> Self {
-        Self {
-            name: settings.name,
-            close_date: settings.close_date,
-            description: settings.description,
-            room_url: settings.room_url,
-            author_id: settings.author_id,
-            yaml_validation: settings.yaml_validation,
-            allow_unsupported: settings.allow_unsupported,
-            yaml_limit_per_user: settings.yaml_limit_per_user,
-            yaml_limit_bypass_list: settings.yaml_limit_bypass_list,
-            manifest: settings.manifest,
-            show_apworlds: settings.show_apworlds,
-            created_at: settings.created_at,
-            updated_at: settings.updated_at,
-            allow_invalid_yamls: settings.allow_invalid_yamls,
-            meta_file: settings.meta_file,
-            is_bundle_room: settings.is_bundle_room,
-            locked: settings.locked,
-        }
-    }
 }
 
 impl RoomSettings {
