@@ -8,7 +8,7 @@ use crate::apworld::{FileContent, FileTree};
 
 use super::{
     apply_word_highlighting, fallback_syntax_tokens, find_line_annotations, highlight_hunk_lines,
-    Annotations, DiffLine, FileDiff, LineType, TemplateAnnotation,
+    Annotations, DiffLine, FileDiff, LineEnding, LineType, TemplateAnnotation,
 };
 
 const CONTEXT_COLLAPSE_THRESHOLD: usize = 20;
@@ -185,6 +185,7 @@ fn diff_single_file_renamed(
             filename_after,
             is_binary: true,
             lines: Vec::new(),
+            line_ending_change: None,
         });
     }
 
@@ -197,8 +198,20 @@ fn diff_single_file_renamed(
         _ => "",
     };
 
-    if old_text == new_text {
-        if filename_before == filename_after {
+    let old_ending = LineEnding::detect(old_text);
+    let new_ending = LineEnding::detect(new_text);
+    let line_ending_change = (old.is_some()
+        && new.is_some()
+        && old_ending != new_ending
+        && old_ending != LineEnding::None
+        && new_ending != LineEnding::None)
+        .then_some((old_ending, new_ending));
+
+    let old_normalized = normalize_line_endings(old_text);
+    let new_normalized = normalize_line_endings(new_text);
+
+    if old_normalized == new_normalized {
+        if filename_before == filename_after && line_ending_change.is_none() {
             return None;
         }
         return Some(FileDiff {
@@ -206,10 +219,11 @@ fn diff_single_file_renamed(
             filename_after,
             is_binary: false,
             lines: Vec::new(),
+            line_ending_change,
         });
     }
 
-    let mut lines = build_diff_lines(old_text, new_text, new_filename, annotations);
+    let mut lines = build_diff_lines(&old_normalized, &new_normalized, new_filename, annotations);
     apply_word_highlighting(&mut lines);
     collapse_context_regions(&mut lines);
 
@@ -218,7 +232,12 @@ fn diff_single_file_renamed(
         filename_after,
         is_binary: false,
         lines,
+        line_ending_change,
     })
+}
+
+fn normalize_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 fn build_diff_lines(
@@ -234,7 +253,7 @@ fn build_diff_lines(
     let mut new_num: i32 = 1;
 
     for change in text_diff.iter_all_changes() {
-        let content = change.value().trim_end_matches('\n').to_string();
+        let content = change.value().trim_end_matches(&['\r', '\n']).to_string();
         match change.tag() {
             ChangeTag::Equal => {
                 raw_lines.push((content, LineType::Context, (Some(old_num), Some(new_num))));
@@ -509,6 +528,57 @@ mod tests {
         );
         let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
         assert_eq!(diffs.len(), 2);
+    }
+
+    #[test]
+    fn test_line_ending_only_change_no_content_diff() {
+        let (old, new) = make_trees(&[("f.py", "a\nb\nc\n")], &[("f.py", "a\r\nb\r\nc\r\n")]);
+        let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].line_ending_change,
+            Some((LineEnding::Lf, LineEnding::Crlf))
+        );
+        assert!(diffs[0].lines.is_empty());
+    }
+
+    #[test]
+    fn test_line_ending_change_with_content_diff() {
+        let (old, new) = make_trees(
+            &[("f.py", "a\nb\nc\n")],
+            &[("f.py", "a\r\nmodified\r\nc\r\n")],
+        );
+        let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].line_ending_change,
+            Some((LineEnding::Lf, LineEnding::Crlf))
+        );
+
+        let changed_lines: Vec<_> = diffs[0]
+            .lines
+            .iter()
+            .filter(|l| l.line_type != LineType::Context)
+            .collect();
+        assert_eq!(
+            changed_lines.len(),
+            2,
+            "only the 'b' -> 'modified' change should appear"
+        );
+        assert!(changed_lines
+            .iter()
+            .any(|l| l.line_type == LineType::Delete && l.raw_content == "b"));
+        assert!(changed_lines
+            .iter()
+            .any(|l| l.line_type == LineType::Add && l.raw_content == "modified"));
+    }
+
+    #[test]
+    fn test_same_line_endings_no_notice() {
+        let (old, new) = make_trees(&[("f.py", "a\r\nb\r\n")], &[("f.py", "a\r\nx\r\n")]);
+        let diffs = compute_file_tree_diff(&old, &new, &BTreeMap::new());
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].line_ending_change, None);
     }
 
     #[test]

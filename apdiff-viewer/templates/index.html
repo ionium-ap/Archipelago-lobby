@@ -124,6 +124,9 @@
                         {% else %}
                             <span class="action-tag changed-tag">changed</span>
                         {% endif %}
+                        {% if file.line_ending_change.is_some() %}
+                            <span class="action-tag eol-tag" title="Line endings changed">{{ file.line_ending_before_str() }} &rarr; {{ file.line_ending_after_str() }}</span>
+                        {% endif %}
                     </div>
                     <div class="viewed-controls">
                         <label>

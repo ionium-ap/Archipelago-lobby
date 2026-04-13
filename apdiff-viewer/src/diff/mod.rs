@@ -270,12 +270,59 @@ impl DiffLine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineEnding {
+    Lf,
+    Crlf,
+    Mixed,
+    None,
+}
+
+impl LineEnding {
+    pub fn detect(text: &str) -> Self {
+        let total_lf = text.matches('\n').count();
+        if total_lf == 0 {
+            return LineEnding::None;
+        }
+        let crlf = text.matches("\r\n").count();
+        match crlf {
+            0 => LineEnding::Lf,
+            n if n == total_lf => LineEnding::Crlf,
+            _ => LineEnding::Mixed,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF",
+            LineEnding::Crlf => "CRLF",
+            LineEnding::Mixed => "mixed",
+            LineEnding::None => "none",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FileDiff {
     pub filename_before: String,
     pub filename_after: String,
     pub is_binary: bool,
     pub lines: Vec<DiffLine>,
+    pub line_ending_change: Option<(LineEnding, LineEnding)>,
+}
+
+impl FileDiff {
+    pub fn line_ending_before_str(&self) -> &'static str {
+        self.line_ending_change
+            .map(|(b, _)| b.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn line_ending_after_str(&self) -> &'static str {
+        self.line_ending_change
+            .map(|(_, a)| a.as_str())
+            .unwrap_or("")
+    }
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]
