@@ -12,8 +12,7 @@ class Menu {
     build() {
         const elmt = document.createElement("ul")
         elmt.classList = "context-menu"
-        elmt.style.visibility = "hidden";
-        elmt.style.display = "block";
+        elmt.style.display = "none";
 
         for (const item of this.items) {
             const itemElmt = item.build();
@@ -22,8 +21,7 @@ class Menu {
         }
 
         this.elmt = elmt;
-        this.anchor.appendChild(this.elmt)
-        this.moveToAnchor()
+        document.body.appendChild(this.elmt)
     }
 
     trigger() {
@@ -35,22 +33,22 @@ class Menu {
     }
 
     open() {
+        this.elmt.style.display = "block";
         this.moveToAnchor()
-        this.elmt.style.visibility = "visible";
         this.opened = true;
 
         addEventListener("resize", this.resizeHandler)
         addEventListener("mousedown", this.clickHandler)
-        addEventListener("wheel", this.closeHandler)
+        addEventListener("scroll", this.closeHandler, true)
     }
 
     close() {
-        this.elmt.style.visibility = "hidden";
+        this.elmt.style.display = "none";
         this.opened = false;
 
         removeEventListener("resize", this.resizeHandler)
         removeEventListener("mousedown", this.clickHandler)
-        removeEventListener("wheel", this.closeHandler)
+        removeEventListener("scroll", this.closeHandler, true)
     }
 
     moveToAnchor() {
@@ -73,7 +71,7 @@ class Menu {
     }
 
     handleClick(event) {
-        if (!this.anchor.contains(event.target)) {
+        if (!this.anchor.contains(event.target) && !this.elmt.contains(event.target)) {
             this.close()
         }
     }
