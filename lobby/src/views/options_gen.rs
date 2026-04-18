@@ -215,11 +215,11 @@ pub(crate) async fn get_options_def(
     });
 
     let job_id = options_gen_queue
-        .enqueue_job(&params, wq::Priority::High, Duration::from_secs(10))
+        .enqueue_job(&params, wq::Priority::High, Duration::from_secs(30))
         .await?;
 
     let Some(status) = options_gen_queue
-        .wait_for_job(&job_id, Some(Duration::from_secs(10)))
+        .wait_for_job(&job_id, Some(Duration::from_secs(30)))
         .await?
     else {
         tracing::error!(%job_id, %apworld_name, %version, "Options gen job timed out");
