@@ -757,13 +757,20 @@ td:hover span[title]::after, .show-discord-names span[title]::after
 @media (max-width:768px)
   .yamls
     td
-      &:first-child > span
+      &:first-child > span:has(> .player-name:not(:first-child))
         display: grid
         justify-content: center
         grid-template-columns: 1em 100%
+        text-align: center
 
-      .player-name
-        display: contents
+        .player-name
+          display: contents
+
+      &:first-child > span:has(> .player-name:first-child)
+        display: flex
+        flex-direction: column
+        align-items: center
+        gap: 0.25em
 
       span[title]::after
         grid-column: -3/3
