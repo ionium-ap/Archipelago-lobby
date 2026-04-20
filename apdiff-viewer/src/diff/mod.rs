@@ -323,6 +323,35 @@ impl FileDiff {
             .map(|(_, a)| a.as_str())
             .unwrap_or("")
     }
+
+    pub fn estimated_height_px(&self) -> usize {
+        const FILE_HEADER_PX: usize = 50;
+        const ROW_PX: usize = 21;
+        const ANNOTATION_ROW_PX: usize = 32;
+        const COLLAPSED_SEPARATOR_PX: usize = 28;
+        const BINARY_PLACEHOLDER_PX: usize = 80;
+
+        if self.is_binary {
+            return FILE_HEADER_PX + BINARY_PLACEHOLDER_PX;
+        }
+
+        let mut height = FILE_HEADER_PX;
+        let mut prev_collapsed = false;
+        for line in &self.lines {
+            if line.collapsed {
+                if !prev_collapsed {
+                    height += COLLAPSED_SEPARATOR_PX;
+                }
+            } else {
+                height += ROW_PX;
+                if !line.annotations.is_empty() {
+                    height += ANNOTATION_ROW_PX;
+                }
+            }
+            prev_collapsed = line.collapsed;
+        }
+        height
+    }
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]

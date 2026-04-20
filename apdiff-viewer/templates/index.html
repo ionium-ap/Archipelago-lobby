@@ -101,7 +101,7 @@
 
             {% for file in version.files %}
             {% set file_id = version.version_id ~ "_" ~ loop.index %}
-            <div class="file-diff">
+            <div class="file-diff" style="--file-diff-height: {{ file.estimated_height_px() }}px">
                 <div class="file-header">
                     <div class="file-info">
                         <span class="filename">
