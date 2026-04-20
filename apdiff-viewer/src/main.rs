@@ -375,46 +375,9 @@ async fn cached_resolve_and_extract(
     version: &str,
     cache: &TreeCache,
 ) -> Result<Arc<apworld::FileTree>> {
-    let key = format!("{apworld_name}:{version}");
-
-    if let Some(tree) = cache.0.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Ok(tree.clone());
-    }
-
-    let tree = Arc::new(
-        resolve_and_extract(
-            queue,
-            index,
-            namespace_prefix,
-            task_id,
-            artifacts,
-            apworld_name,
-            version,
-        )
-        .await?,
-    );
-
-    cache
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .put(key, tree.clone());
-    Ok(tree)
-}
-
-async fn resolve_and_extract(
-    queue: &Queue,
-    index: &Index,
-    namespace_prefix: &str,
-    task_id: &str,
-    artifacts: &[String],
-    apworld_name: &str,
-    version: &str,
-) -> Result<apworld::FileTree> {
     let pr_artifact = format!("public/output/apworlds/{apworld_name}-{version}.apworld");
-
-    let bytes = if artifacts.contains(&pr_artifact) {
-        tc::fetch_artifact_bytes(queue, task_id, &pr_artifact).await?
+    let (source_task_id, artifact_name) = if artifacts.contains(&pr_artifact) {
+        (task_id.to_string(), pr_artifact)
     } else {
         let index_path = tc::index_path(namespace_prefix, apworld_name, version);
         let indexed_task_id = tc::find_indexed_task(index, &index_path)
@@ -422,12 +385,25 @@ async fn resolve_and_extract(
             .ok_or_else(|| {
                 anyhow::anyhow!("Version {version} of {apworld_name} not found in index")
             })?;
-
         let artifact_name = format!("public/{apworld_name}-{version}.apworld");
-        tc::fetch_artifact_bytes(queue, &indexed_task_id, &artifact_name).await?
+        (indexed_task_id, artifact_name)
     };
 
-    Ok(apworld::extract_apworld(&bytes)?)
+    let key = format!("{source_task_id}:{artifact_name}");
+
+    if let Some(tree) = cache.0.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(tree.clone());
+    }
+
+    let bytes = tc::fetch_artifact_bytes(queue, &source_task_id, &artifact_name).await?;
+    let tree = Arc::new(apworld::extract_apworld(&bytes)?);
+
+    cache
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .put(key, tree.clone());
+    Ok(tree)
 }
 
 async fn fetch_annotations(
