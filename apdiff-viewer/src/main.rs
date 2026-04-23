@@ -256,7 +256,7 @@ async fn process_world(
         })
         .collect();
 
-    let is_manual = apworld_name.starts_with("manual_") && apworld_name != BASE_MANUAL;
+    let is_manual = apworld_name.to_lowercase().starts_with("manual_") && apworld_name != BASE_MANUAL;
 
     let base_indexed = if is_manual {
         let base = tc::list_indexed_versions(index, namespace_prefix, BASE_MANUAL)
