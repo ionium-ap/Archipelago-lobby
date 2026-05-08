@@ -16,7 +16,7 @@ displayed about the index as well as the base version for archipelago.
 ```toml
 archipelago_repo = "https://github.com/ArchipelagoMW/Archipelago.git"
 archipelago_version = "0.5.0"
-index_homepage = "https://github.com/Eijebong/Archipelago-index"
+index_homepage = "https://github.com/ionium-ap/Archipelago-index"
 index_dir = "index"
 ```
 

@@ -12,7 +12,7 @@ mkdir -p /ap/archipelago
 cd /ap/archipelago
 
 git init
-git remote add origin https://github.com/Eijebong/Archipelago.git
+git remote add origin https://github.com/ionium-ap/Archipelago.git
 git fetch origin ${BASE_COMMIT} --depth 1
 git reset --hard ${BASE_COMMIT}
 
@@ -31,7 +31,7 @@ uv pip install -r worlds/zillion/requirements.txt
 uv pip install -r WebHostLib/requirements.txt
 uv pip install psycopg2
 uv run cythonize -a -i _speedups.pyx
-uv pip install git+https://github.com/Eijebong/aplinter@${LINTER_COMMIT}
+uv pip install git+https://github.com/ionium-ap/aplinter@${LINTER_COMMIT}
 uv pip install yappi
 git rev-parse HEAD > /ap/archipelago/version
 rm -Rf .git
@@ -43,7 +43,7 @@ bash -ex /ap/prepare_worlds.sh /ap/archipelago /ap/supported_worlds/
 mkdir /tmp/fuzzer
 cd /tmp/fuzzer
 git init
-git remote add origin https://github.com/Eijebong/Archipelago-fuzzer.git
+git remote add origin https://github.com/ionium-ap/Archipelago-fuzzer.git
 git fetch origin ${FUZZER_COMMIT} --depth 1
 git reset --hard ${FUZZER_COMMIT}
 cp fuzz.py /ap/archipelago/fuzz.py
