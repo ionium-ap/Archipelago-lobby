@@ -8,8 +8,6 @@ use crate::config::DiscordConfig;
 use crate::instrumentation::RoomMetrics;
 use crate::session::{AdminSession, AdminToken, Session};
 use anyhow::Context as _;
-use askama::Template;
-use askama_web::WebTemplate;
 use deadpool::Runtime;
 use deadpool_redis::{Config, Pool as RedisPool};
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
@@ -23,7 +21,7 @@ use rocket::data::{Limits, ToByteUnit};
 use rocket::http::{Method, Status};
 use rocket::response::Redirect;
 use rocket::route::{Handler, Outcome};
-use rocket::{catch, catchers, Request, State};
+use rocket::{catch, catchers, Request};
 use rocket::{Data, Route};
 use rocket_oauth2::OAuth2;
 use rocket_prometheus::PrometheusMetrics;
@@ -118,19 +116,6 @@ async fn unprocessable_entity<'r>(req: &'r Request<'r>) -> crate::error::Result<
         .await?;
 
     Ok(Redirect::to("/"))
-}
-
-#[derive(Template, WebTemplate)]
-#[template(path = "goodbye.html")]
-struct Goodbye<'a> {
-    base: TplContext<'a>,
-}
-
-#[rocket::get("/goodbye")]
-async fn goodbye<'a>(session: Session, ctx: &'a State<Context>) -> Goodbye<'a> {
-    Goodbye {
-        base: TplContext::from_session("goodbye", session, ctx).await,
-    }
 }
 
 #[derive(Clone)]
@@ -296,7 +281,6 @@ pub async fn main() -> crate::error::Result<()> {
         .mount("/", views::room_templates::routes())
         .mount("/", views::apworlds::routes())
         .mount("/", views::options_gen::routes())
-        .mount("/", rocket::routes![goodbye])
         .mount("/auth/", views::auth::routes())
         .mount("/api/", views::api::routes())
         .mount(

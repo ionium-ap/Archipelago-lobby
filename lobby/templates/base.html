@@ -50,9 +50,6 @@
                     {% block menu %}{% endblock menu %}
                 </nav>
                 <div id="messages">
-                    {% if base.cur_module != "goodbye" %}
-                        <pre class="warning">This project is shutting down on 2026-05-16. Read more <a href="/goodbye">here</a></pre>
-                    {% endif %}
                     {% for error in base.err_msg %}
                         <pre class="error">{{ error|escape|linebreaksbr|safe }}</pre>
                     {% endfor %}
