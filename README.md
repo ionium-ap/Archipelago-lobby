@@ -1,7 +1,3 @@
-> [!IMPORTANT]
-> This project has been archived. I have no intention on continuing working on
-> this. You can read more [here](https://gist.github.com/Eijebong/4a8a4a4f96bb64f1503113c81c410653)
-
 Archipelago lobby
 =================
 
