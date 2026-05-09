@@ -7,7 +7,7 @@ services:
       POSTGRES_DB: aplobby
       POSTGRES_PASSWORD: postgres
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./pgdata:/var/lib/postgresql/data
     healthcheck:
       test: pg_isready -U postgres
       interval: 1s
@@ -28,7 +28,7 @@ services:
     image: debian
     user: "root"
     volumes:
-      - cargo:/tmp/cargo
+      - ./cargo:/tmp/cargo
       - ./target:/builds/target
       - ./tmp/apworlds_index:/builds/apworlds_index
       - ./tmp/gen-output:/builds/gen-output
@@ -42,7 +42,7 @@ services:
       - ./target:/builds/target
       - ./tmp/apworlds_index:/builds/apworlds_index
       - ./tmp/gen-output:/builds/gen-output
-      - cargo:/builds/cargo
+      - ./cargo:/builds/cargo
     environment:
       CARGO_HOME: /builds/cargo
       CARGO_TARGET_DIR: /builds/target
@@ -141,7 +141,3 @@ services:
     depends_on:
       lobby:
         condition: service_healthy
-
-volumes:
-  cargo: {}
-  pgdata: {}

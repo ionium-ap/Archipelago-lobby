@@ -6,3 +6,5 @@ __pycache__/
 .env.*
 /taskcluster/docker/ap-worker/webhost-config.yaml
 /docker-compose.yml
+/cargo
+/pgdata
