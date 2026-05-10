@@ -22,6 +22,14 @@ jobs:
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
         run: |
-          git push --force-with-lease \
-            "https://oauth2:${GITLAB_TOKEN}@git.mooinglemur.com/ionium-ap/Archipelago-lobby.git" \
-            main:main
+          GITLAB_URL="https://oauth2:${GITLAB_TOKEN}@git.mooinglemur.com/ionium-ap/Archipelago-lobby.git"
+          git remote add gitlab "$GITLAB_URL"
+
+          # Populate refs/remotes/gitlab/main so --force-with-lease has a
+          # reference point. If gitlab is empty / has no main yet, fall through
+          # to a plain push for the initial sync.
+          if git fetch gitlab main 2>/dev/null; then
+            git push --force-with-lease gitlab main:main
+          else
+            git push gitlab main:main
+          fi
