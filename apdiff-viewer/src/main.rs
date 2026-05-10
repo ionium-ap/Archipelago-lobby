@@ -23,6 +23,7 @@ use taskcluster::{ClientBuilder, Credentials, Index, Queue};
 
 mod api;
 mod apworld;
+mod blob_store;
 mod db;
 mod diff;
 mod guards;

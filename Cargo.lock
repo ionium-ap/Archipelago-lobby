@@ -260,6 +260,8 @@ dependencies = [
  "strsim",
  "syntect",
  "taskcluster",
+ "tempfile",
+ "tokio",
  "tracing",
  "walkdir",
  "zip",
