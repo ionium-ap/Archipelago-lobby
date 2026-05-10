@@ -16,6 +16,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Read,
 };
+use tempfile::NamedTempFile;
 
 use world::{World, WorldOrigin};
 
@@ -170,23 +171,43 @@ impl Index {
 
         let mut stream = stream::iter(download_tasks)
             .map(|task| async move {
-                log::debug!("Copying world {} into worlds folder.", task.apworld_name);
-                let apworld_destination = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&task.destination_path)?;
-                let checksum = task
-                    .world
-                    .copy_to(&task.version, &apworld_destination, task.expected_checksum)
-                    .await?;
-                Ok::<_, anyhow::Error>((task.apworld_name, task.version, checksum))
+                let apworld_name = task.apworld_name.clone();
+                let version = task.version.clone();
+                log::debug!("Copying world {apworld_name} into worlds folder.");
+                let result: Result<String> = async move {
+                    let parent_dir = task
+                        .destination_path
+                        .parent()
+                        .context("destination has no parent directory")?;
+                    let tempfile = NamedTempFile::new_in(parent_dir)?;
+                    let checksum = task
+                        .world
+                        .copy_to(&task.version, tempfile.as_file(), task.expected_checksum)
+                        .await?;
+                    tempfile
+                        .persist(&task.destination_path)
+                        .map_err(|e| e.error)?;
+                    Ok(checksum)
+                }
+                .await;
+                (apworld_name, version, result)
             })
             .buffer_unordered(10);
 
-        while let Some(result) = stream.next().await {
-            let (apworld_name, version, checksum) = result?;
-            new_lock.set_checksum(&apworld_name, &version, &checksum);
+        while let Some((apworld_name, version, result)) = stream.next().await {
+            match result {
+                Ok(checksum) => {
+                    new_lock.set_checksum(&apworld_name, &version, &checksum);
+                }
+                Err(e) => {
+                    log::error!(
+                        "\x1b[1;31m!!! SKIPPING APWORLD {apworld_name} v{version}: {e:#} !!!\x1b[0m"
+                    );
+                    log::error!(
+                        "\x1b[1;31m!!! This world will not be available until the index entry is fixed. !!!\x1b[0m"
+                    );
+                }
+            }
         }
 
         Ok(new_lock)

@@ -27,7 +27,7 @@ if [[ ! -f "./Rocket.toml" ]]; then
     read -r _client_id
     echo "Paste the client secret:"
     read -r _client_secret
-    echo "Paste your discord user ID:"
+    echo "Paste your (fully numeric) discord user ID:"
     read -r _admin_id
 
     cat > Rocket.toml <<EOF
