@@ -7,6 +7,7 @@ edition = "2021"
 apwm = { path = "../apwm" }
 common = { path = "../common" }
 anyhow = "1.0.88"
+async-trait = "0.1"
 askama = { version = "0.15" }
 askama_web = { version = "0.15", features = ["rocket-0.5"] }
 chrono = { version = "0.4", features = ["serde"] }

@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::BTreeMap, ffi::OsStr, io::Cursor, path::PathBuf};
 
-use apwm::changes::{Changes, Checksum};
+use apwm::changes::Checksum;
 use askama::Template;
 use askama_web::WebTemplate;
 use diesel_async::pooled_connection::deadpool::Pool;
@@ -27,9 +27,11 @@ mod db;
 mod diff;
 mod guards;
 mod schema;
+mod source;
 mod tc;
 
-use diff::{Annotations, FileDiff};
+use diff::FileDiff;
+use source::{ArtifactSource, BASE_MANUAL};
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
@@ -72,11 +74,11 @@ where
     }
 }
 
-struct TcConfig {
-    index_namespace_prefix: String,
+pub(crate) struct TcConfig {
+    pub(crate) index_namespace_prefix: String,
 }
 
-struct TreeCache(Mutex<lru::LruCache<String, Arc<apworld::FileTree>>>);
+pub(crate) struct TreeCache(pub(crate) Mutex<lru::LruCache<String, Arc<apworld::FileTree>>>);
 
 #[derive(Template, WebTemplate)]
 #[template(path = "index.html")]
@@ -88,7 +90,6 @@ struct IndexPage {
 
 const CSS_VERSION: &str = std::env!("CSS_VERSION");
 
-const BASE_MANUAL: &str = "manual_ultimatemarvelvscapcom3_manualteam";
 const BASE_MANUAL_PREFIX: &str = "base:";
 
 #[derive(Debug)]
@@ -156,11 +157,15 @@ async fn get_task_diffs(
     tc_config: &State<TcConfig>,
     tree_cache: &State<TreeCache>,
 ) -> Result<IndexPage> {
-    let (artifacts, changes_text) = futures::try_join!(
-        tc::get_task_artifacts(queue, task_id),
-        tc::fetch_artifact_text(queue, task_id, "public/output/changes.json"),
-    )?;
-    let changes: Changes = deserialize_json(&changes_text)?;
+    let source = source::tc::TcSource::new(
+        queue.inner(),
+        index.inner(),
+        &tc_config.index_namespace_prefix,
+        task_id.to_string(),
+        tree_cache.inner(),
+    )
+    .await?;
+    let changes = source.changes_json().await?;
 
     let apworld_diffs = try_join_all(
         changes
@@ -172,24 +177,15 @@ async fn get_task_diffs(
                     .any(|v| !matches!(wc.checksums.get(v), Some(Checksum::Supported)))
             })
             .map(|(apworld_name, world_changes)| {
-                let artifacts = &artifacts;
-                let queue: &Queue = queue;
-                let index: &Index = index;
-                let prefix = &tc_config.index_namespace_prefix;
+                let source = &source;
                 let params = &params;
-                let tree_cache: &TreeCache = tree_cache;
                 async move {
                     let from_override = params.get(&format!("{apworld_name}_from"));
                     process_world(
-                        queue,
-                        index,
-                        prefix,
-                        task_id,
-                        artifacts,
+                        source,
                         &apworld_name,
                         world_changes,
                         from_override.map(|s| s.as_str()),
-                        tree_cache,
                     )
                     .await
                 }
@@ -205,42 +201,22 @@ async fn get_task_diffs(
 }
 
 async fn process_world(
-    queue: &Queue,
-    index: &Index,
-    namespace_prefix: &str,
-    task_id: &str,
-    artifacts: &[String],
+    source: &dyn ArtifactSource,
     apworld_name: &str,
     world_changes: apwm::changes::WorldChanges,
     from_override: Option<&str>,
-    tree_cache: &TreeCache,
 ) -> Result<ApworldDiff> {
     let mut added_sorted = world_changes.added_versions.clone();
     added_sorted.retain(|v| !matches!(world_changes.checksums.get(v), Some(Checksum::Supported)));
     added_sorted.sort();
 
     let (indexed, to_trees) = futures::join!(
-        async {
-            tc::list_indexed_versions(index, namespace_prefix, apworld_name)
-                .await
-                .unwrap_or_default()
-        },
+        async { source.list_versions(apworld_name).await.unwrap_or_default() },
         try_join_all(added_sorted.iter().map(|v| {
             let version = v.to_string();
             async move {
-                let tree = cached_resolve_and_extract(
-                    queue,
-                    index,
-                    namespace_prefix,
-                    task_id,
-                    artifacts,
-                    apworld_name,
-                    &version,
-                    tree_cache,
-                )
-                .await?;
-                let annotations =
-                    fetch_annotations(queue, task_id, artifacts, apworld_name, &version).await?;
+                let tree = source.fetch_tree(apworld_name, &version).await?;
+                let annotations = source.annotations(apworld_name, &version).await?;
                 Ok::<_, Error>((version, tree, annotations))
             }
         })),
@@ -249,8 +225,8 @@ async fn process_world(
 
     let mut from_versions: Vec<FromVersion> = indexed
         .iter()
-        .filter(|(v, _)| !world_changes.added_versions.contains(v))
-        .map(|(v, _)| FromVersion {
+        .filter(|v| !world_changes.added_versions.contains(v))
+        .map(|v| FromVersion {
             label: v.to_string(),
             value: v.to_string(),
         })
@@ -260,10 +236,8 @@ async fn process_world(
         apworld_name.to_lowercase().starts_with("manual_") && apworld_name != BASE_MANUAL;
 
     let base_indexed = if is_manual {
-        let base = tc::list_indexed_versions(index, namespace_prefix, BASE_MANUAL)
-            .await
-            .unwrap_or_default();
-        for (v, _) in &base {
+        let base = source.list_versions(BASE_MANUAL).await.unwrap_or_default();
+        for v in &base {
             from_versions.push(FromVersion {
                 label: format!("base manual {v}"),
                 value: format!("{BASE_MANUAL_PREFIX}{v}"),
@@ -281,11 +255,8 @@ async fn process_world(
     let selected_from = match from_override {
         Some("") => None,
         Some(v) => Some(v.to_string()),
-        None => find_previous_version(&latest_added, &indexed).or_else(|| {
-            base_indexed
-                .last()
-                .map(|(v, _)| format!("{BASE_MANUAL_PREFIX}{v}"))
-        }),
+        None => find_previous_version(&latest_added, &indexed)
+            .or_else(|| base_indexed.last().map(|v| format!("{BASE_MANUAL_PREFIX}{v}"))),
     };
 
     let (selected_from, from_tree) = match &selected_from {
@@ -297,18 +268,7 @@ async fn process_world(
                 } else {
                     (apworld_name, v.as_str())
                 };
-            match cached_resolve_and_extract(
-                queue,
-                index,
-                namespace_prefix,
-                task_id,
-                artifacts,
-                resolve_name,
-                resolve_version,
-                tree_cache,
-            )
-            .await
-            {
+            match source.fetch_tree(resolve_name, resolve_version).await {
                 Ok(tree) => {
                     let tree = if is_base_manual {
                         Arc::new(apworld::rekey_tree(&tree, apworld_name))
@@ -318,10 +278,7 @@ async fn process_world(
                     (selected_from, Some(tree))
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Error fetching from version {v} for {apworld_name}: {}",
-                        e.0
-                    );
+                    tracing::warn!("Error fetching from version {v} for {apworld_name}: {e}");
                     (None, None)
                 }
             }
@@ -357,71 +314,13 @@ async fn process_world(
     })
 }
 
-fn find_previous_version(current: &str, indexed: &[(Version, String)]) -> Option<String> {
+fn find_previous_version(current: &str, indexed: &[Version]) -> Option<String> {
     let current_v = Version::parse(current).ok()?;
     indexed
         .iter()
-        .filter(|(v, _)| v < &current_v)
-        .max_by(|a, b| a.0.cmp(&b.0))
-        .map(|(v, _)| v.to_string())
-}
-
-async fn cached_resolve_and_extract(
-    queue: &Queue,
-    index: &Index,
-    namespace_prefix: &str,
-    task_id: &str,
-    artifacts: &[String],
-    apworld_name: &str,
-    version: &str,
-    cache: &TreeCache,
-) -> Result<Arc<apworld::FileTree>> {
-    let pr_artifact = format!("public/output/apworlds/{apworld_name}-{version}.apworld");
-    let (source_task_id, artifact_name) = if artifacts.contains(&pr_artifact) {
-        (task_id.to_string(), pr_artifact)
-    } else {
-        let index_path = tc::index_path(namespace_prefix, apworld_name, version);
-        let indexed_task_id = tc::find_indexed_task(index, &index_path)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!("Version {version} of {apworld_name} not found in index")
-            })?;
-        let artifact_name = format!("public/{apworld_name}-{version}.apworld");
-        (indexed_task_id, artifact_name)
-    };
-
-    let key = format!("{source_task_id}:{artifact_name}");
-
-    if let Some(tree) = cache.0.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Ok(tree.clone());
-    }
-
-    let bytes = tc::fetch_artifact_bytes(queue, &source_task_id, &artifact_name).await?;
-    let tree = Arc::new(apworld::extract_apworld(&bytes)?);
-
-    cache
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .put(key, tree.clone());
-    Ok(tree)
-}
-
-async fn fetch_annotations(
-    queue: &Queue,
-    task_id: &str,
-    artifacts: &[String],
-    apworld_name: &str,
-    version: &str,
-) -> Result<BTreeMap<String, Vec<Annotations>>> {
-    let aplint_name = format!("public/output/{apworld_name}-{version}.aplint");
-
-    if !artifacts.iter().any(|a| a == &aplint_name) {
-        return Ok(BTreeMap::new());
-    }
-
-    let text = tc::fetch_artifact_text(queue, task_id, &aplint_name).await?;
-    Ok(deserialize_json(&text)?)
+        .filter(|&v| v < &current_v)
+        .max()
+        .map(|v| v.to_string())
 }
 
 #[rocket::get("/tests/<task_id>")]

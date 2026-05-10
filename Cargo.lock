@@ -235,6 +235,7 @@ dependencies = [
  "apwm",
  "askama",
  "askama_web",
+ "async-trait",
  "chrono",
  "common",
  "diesel",
