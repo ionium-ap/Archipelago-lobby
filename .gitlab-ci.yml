@@ -48,7 +48,7 @@ variables:
   stage: rust-build
   image: rust:1.92-trixie
   tags:
-    - docker-sandboxed
+    - docker
     - linux
   before_script:
     - apt-get update
