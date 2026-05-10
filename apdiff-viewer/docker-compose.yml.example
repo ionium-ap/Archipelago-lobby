@@ -46,8 +46,12 @@ services:
       ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       RUST_LOG: info
       ROCKET_ADDRESS: "0.0.0.0"
+      # `normal` logs every request; `critical` (release default) suppresses
+      # them. Bump to `debug` for very noisy troubleshooting.
+      ROCKET_LOG_LEVEL: normal
     ports:
       - "127.0.0.1:8001:8000"
     depends_on:
       postgres:
         condition: service_healthy
+  

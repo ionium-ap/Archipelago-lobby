@@ -37,7 +37,7 @@ rand = "0.8"
 rayon = "1"
 lru = "0.16"
 semver = { version = "1", features = ["serde"] }
-tracing = "0.1"
+tracing = { version = "0.1", features = ["log"] }
 
 [build-dependencies]
 sha2 = "0.10"

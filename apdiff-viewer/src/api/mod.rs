@@ -165,11 +165,15 @@ fn generate_submission_id() -> String {
 type SubmissionError = (Status, String);
 
 fn bad_request(msg: impl Into<String>) -> SubmissionError {
-    (Status::BadRequest, msg.into())
+    let s = msg.into();
+    tracing::warn!("rejecting upload: {s}");
+    (Status::BadRequest, s)
 }
 
 fn internal(msg: impl Into<String>) -> SubmissionError {
-    (Status::InternalServerError, msg.into())
+    let s = msg.into();
+    tracing::error!("upload handler internal error: {s}");
+    (Status::InternalServerError, s)
 }
 
 /// Ingest a tarball of `.apworld` bytes + metadata, store the blobs, and
