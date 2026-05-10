@@ -108,12 +108,26 @@ curl -fsS -X POST -H "X-Api-Key: changeme" --data-binary @/tmp/sub.tar http://lo
 
 The response is `{ "id": "...", "url": "..." }`. Open the URL in a browser to see the rendered diff.
 
+### Bootstrap import
+
+A separate single-artifact endpoint exists for one-shot seeding of the dedup table — used by an index-walker job that uploads the latest version of every apworld so future PR submissions have historical from-versions to point at. Same `APDIFF_API_KEY` auth as the submission endpoint; no manifest, no `submissions` rows are created — only `apworld_artifacts` is populated.
+
+```
+curl -fsS -X POST \
+  -H "X-Api-Key: $APDIFF_API_KEY" \
+  --data-binary @some-0.1.0.apworld \
+  "http://localhost:8001/api/import?world=some&version=0.1.0"
+```
+
+Response: `{ "world": "some", "version": "0.1.0", "sha256": "...", "size_bytes": N, "stored": true }`. `stored: false` means the `(world, version, sha256)` tuple was already in the dedup table (re-upload is idempotent).
+
 ## Required secrets (apdiff-viewer)
 
 | Variable | Where | Notes |
 |---|---|---|
 | `POSTGRES_PASSWORD` (apdiff stack) | `postgres` service env | Mirror in this stack's `DATABASE_URL`. Independent of the lobby's postgres. |
 | `DATABASE_URL` | `apdiff-viewer` service env | `postgres://postgres:<password>@postgres:5432/apdiff` |
+| `ROCKET_SECRET_KEY` | `apdiff-viewer` service env | Rocket release-mode startup check; same encoding rules as the lobby (44 base64 / 88 base64 / 64 hex chars). The service itself doesn't use session cookies, but the check fires anyway. |
 | `APDIFF_API_KEY` | `apdiff-viewer` service env | Auth for `POST /api/submissions`. Share with the CI side that POSTs tarballs. |
 | `FUZZ_API_KEY` | `apdiff-viewer` service env | Inherited from the legacy fuzz-results endpoints. Required at startup even if those routes go unused. |
 

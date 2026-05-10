@@ -139,6 +139,26 @@ pub async fn insert_submission_with_artifacts<'a>(
     .await
 }
 
+/// Upsert into the global apworld dedup table. Returns 1 if a new row was
+/// written, 0 if `(world_name, version, sha256)` was already present.
+/// Used by the bootstrap import path (`POST /api/import`) to seed historical
+/// versions without going through the submission flow.
+pub async fn insert_apworld_artifact<'a>(
+    conn: &mut AsyncPgConnection,
+    artifact: &NewApworldArtifact<'a>,
+) -> QueryResult<usize> {
+    diesel::insert_into(apworld_artifacts::table)
+        .values(artifact)
+        .on_conflict((
+            apworld_artifacts::world_name,
+            apworld_artifacts::version,
+            apworld_artifacts::sha256,
+        ))
+        .do_nothing()
+        .execute(conn)
+        .await
+}
+
 pub async fn get_submission(
     conn: &mut AsyncPgConnection,
     id: &str,

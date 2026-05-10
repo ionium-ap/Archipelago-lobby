@@ -40,6 +40,10 @@ services:
       APDIFF_API_KEY: changeme
       APDIFF_STORAGE_ROOT: /var/lib/apdiff-viewer/blobs
       APDIFF_PUBLIC_BASE_URL: http://localhost:8001
+      # Rocket refuses to launch in release mode without a real secret key.
+      # apdiff-viewer doesn't itself use session cookies, but this still has
+      # to be set. Generate with: openssl rand -base64 32
+      ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       RUST_LOG: info
       ROCKET_ADDRESS: "0.0.0.0"
     ports:

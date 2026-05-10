@@ -17,8 +17,9 @@ use tokio::io::AsyncReadExt;
 
 use crate::blob_store::BlobStore;
 use crate::db::{
-    self, insert_submission_with_artifacts, FuzzResult, NewApworldArtifact, NewFuzzResult,
-    NewSubmission, NewSubmissionAnnotation, NewSubmissionArtifact, PreviousResult,
+    self, insert_apworld_artifact, insert_submission_with_artifacts, FuzzResult,
+    NewApworldArtifact, NewFuzzResult, NewSubmission, NewSubmissionAnnotation,
+    NewSubmissionArtifact, PreviousResult,
 };
 use crate::guards::{ApdiffApiKey, FuzzApiKey};
 use crate::{Result, SubmissionConfig};
@@ -371,11 +372,100 @@ async fn submit_apworlds(
     }))
 }
 
+// ─── bootstrap import ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ImportResponse {
+    pub world: String,
+    pub version: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    /// True if this call newly stored the artifact; false if `(world, version,
+    /// sha256)` was already present in the dedup table. The blob is written
+    /// to disk either way (idempotent).
+    pub stored: bool,
+}
+
+/// Single-artifact upload for bootstrap seeding of `apworld_artifacts`.
+/// Intended for a one-shot job that walks the apworld index and pushes the
+/// latest version of each world so that future submissions' from-version
+/// dropdowns have historical context to point at.
+///
+/// Authoritatively scoped to the global dedup table — no `submissions` /
+/// `submission_artifacts` rows are created. Use `POST /api/submissions` for
+/// the PR-driven path.
+#[rocket::post("/import?<world>&<version>", data = "<data>")]
+async fn import_apworld(
+    _key: ApdiffApiKey,
+    pool: &State<Pool<AsyncPgConnection>>,
+    blobs: &State<Arc<BlobStore>>,
+    world: &str,
+    version: &str,
+    data: Data<'_>,
+) -> std::result::Result<Json<ImportResponse>, SubmissionError> {
+    if world.is_empty() {
+        return Err(bad_request("world query parameter is required"));
+    }
+    if version.is_empty() {
+        return Err(bad_request("version query parameter is required"));
+    }
+
+    let body = data
+        .open(MAX_UPLOAD_BYTES.bytes())
+        .into_bytes()
+        .await
+        .map_err(|e| bad_request(format!("body read failed: {e}")))?;
+    if !body.is_complete() {
+        return Err(bad_request(format!(
+            "body exceeded {MAX_UPLOAD_BYTES}-byte limit"
+        )));
+    }
+    let bytes = body.into_inner();
+    if bytes.is_empty() {
+        return Err(bad_request("body is empty"));
+    }
+
+    let sha256_hex = format!("{:x}", Sha256::digest(&bytes));
+    let size = bytes.len() as i64;
+
+    // Blob first, then DB. Both are idempotent for identical content.
+    blobs
+        .put(&sha256_hex, &bytes)
+        .await
+        .map_err(|e| internal(format!("blob write failed for {sha256_hex}: {e}")))?;
+
+    let mut conn = pool
+        .get()
+        .await
+        .map_err(|e| internal(format!("db pool acquire: {e}")))?;
+
+    let inserted = insert_apworld_artifact(
+        &mut conn,
+        &NewApworldArtifact {
+            world_name: world,
+            version,
+            sha256: &sha256_hex,
+            size_bytes: size,
+        },
+    )
+    .await
+    .map_err(|e| internal(format!("apworld_artifacts insert failed: {e}")))?;
+
+    Ok(Json(ImportResponse {
+        world: world.to_string(),
+        version: version.to_string(),
+        sha256: sha256_hex,
+        size_bytes: size,
+        stored: inserted > 0,
+    }))
+}
+
 pub fn routes() -> Vec<Route> {
     routes![
         record_fuzz_results,
         get_fuzz_results,
         get_previous_results,
         submit_apworlds,
+        import_apworld,
     ]
 }
