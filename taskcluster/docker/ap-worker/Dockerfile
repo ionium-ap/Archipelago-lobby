@@ -46,4 +46,4 @@ COPY --from=builder /ap/archipelago/ /ap/archipelago/
 COPY --from=builder /ap/supported_worlds/ /ap/supported_worlds/
 COPY --from=builder /ap/ap-worker/ /ap/ap-worker/
 
-ENV PATH="/ap/.venv/bin:$PATH"
+ENV PATH="/ap/archipelago/.venv/bin:$PATH"
