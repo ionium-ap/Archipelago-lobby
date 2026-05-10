@@ -8,3 +8,6 @@ __pycache__/
 /docker-compose.yml
 /cargo
 /pgdata
+/apdiff-viewer/docker-compose.yml
+/apdiff-viewer/pgdata
+/apdiff-viewer/blobs

@@ -160,14 +160,22 @@ fn deserialize_json<T: for<'de> serde::Deserialize<'de>>(text: &str) -> Result<T
 async fn get_task_diffs(
     task_id: &str,
     params: HashMap<String, String>,
-    queue: &State<Queue>,
-    index: &State<Index>,
+    queue: &State<Option<Queue>>,
+    index: &State<Option<Index>>,
     tc_config: &State<TcConfig>,
     tree_cache: &State<TreeCache>,
 ) -> Result<IndexPage> {
+    let queue = queue
+        .inner()
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Taskcluster integration is not configured on this deployment"))?;
+    let index = index
+        .inner()
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Taskcluster integration is not configured on this deployment"))?;
     let source = source::tc::TcSource::new(
-        queue.inner(),
-        index.inner(),
+        queue,
+        index,
         &tc_config.index_namespace_prefix,
         task_id.to_string(),
         tree_cache.inner(),
@@ -355,7 +363,11 @@ fn find_previous_version(current: &str, indexed: &[Version]) -> Option<String> {
 }
 
 #[rocket::get("/tests/<task_id>")]
-async fn get_test_results(task_id: &str, queue: &State<Queue>) -> Result<TestPage> {
+async fn get_test_results(task_id: &str, queue: &State<Option<Queue>>) -> Result<TestPage> {
+    let queue = queue
+        .inner()
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Taskcluster integration is not configured on this deployment"))?;
     let artifacts = tc::get_task_artifacts(queue, task_id).await?;
     let Some(aptest_name) = artifacts
         .iter()
@@ -401,19 +413,28 @@ async fn main() -> anyhow::Result<()> {
     }
     env_logger::init();
 
-    let mut client_builder = ClientBuilder::new(std::env::var("TASKCLUSTER_ROOT_URL")?);
-    if let (Ok(client_id), Ok(access_token)) = (
-        std::env::var("TASKCLUSTER_CLIENT_ID"),
-        std::env::var("TASKCLUSTER_ACCESS_TOKEN"),
-    ) {
-        client_builder = client_builder.credentials(Credentials {
-            client_id,
-            access_token,
-            certificate: None,
-        });
-    }
-    let queue = Queue::new(client_builder.clone())?;
-    let tc_index = Index::new(client_builder)?;
+    // Taskcluster is optional. If TASKCLUSTER_ROOT_URL isn't set, the TC-backed
+    // routes (`GET /<task_id>`, `GET /tests/<task_id>`) error at request time
+    // with a clear message; the submission routes work either way.
+    let (queue, tc_index): (Option<Queue>, Option<Index>) =
+        if let Ok(root_url) = std::env::var("TASKCLUSTER_ROOT_URL") {
+            let mut client_builder = ClientBuilder::new(root_url);
+            if let (Ok(client_id), Ok(access_token)) = (
+                std::env::var("TASKCLUSTER_CLIENT_ID"),
+                std::env::var("TASKCLUSTER_ACCESS_TOKEN"),
+            ) {
+                client_builder = client_builder.credentials(Credentials {
+                    client_id,
+                    access_token,
+                    certificate: None,
+                });
+            }
+            let q = Queue::new(client_builder.clone())?;
+            let i = Index::new(client_builder)?;
+            (Some(q), Some(i))
+        } else {
+            (None, None)
+        };
 
     let db_url = std::env::var("DATABASE_URL")?;
     let db_pool: Pool<AsyncPgConnection> =

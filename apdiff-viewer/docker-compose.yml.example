@@ -1,0 +1,49 @@
+# Standalone deployment of apdiff-viewer + its postgres. This stack is
+# independent of the lobby's compose; ports are offset (25433, 8001) so the
+# two can run side-by-side on the same host.
+#
+# Before bringing this up, build the apdiff-viewer binary and stage it where
+# the Dockerfile expects it:
+#
+#   cargo build --release --bin apdiff-viewer
+#   cp ../target/release/apdiff-viewer ../taskcluster/docker/apdiff-viewer/build-result
+#
+# Then:
+#
+#   cp docker-compose.yml.example docker-compose.yml
+#   # edit every `changeme` and APDIFF_PUBLIC_BASE_URL below
+#   docker compose up -d
+
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - "127.0.0.1:25433:5432"
+    environment:
+      POSTGRES_DB: apdiff
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 1s
+      timeout: 1s
+      retries: 100
+
+  apdiff-viewer:
+    build: ../taskcluster/docker/apdiff-viewer
+    volumes:
+      - ./blobs:/var/lib/apdiff-viewer/blobs
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/apdiff
+      FUZZ_API_KEY: changeme
+      APDIFF_API_KEY: changeme
+      APDIFF_STORAGE_ROOT: /var/lib/apdiff-viewer/blobs
+      APDIFF_PUBLIC_BASE_URL: http://localhost:8001
+      RUST_LOG: info
+      ROCKET_ADDRESS: "0.0.0.0"
+    ports:
+      - "127.0.0.1:8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy

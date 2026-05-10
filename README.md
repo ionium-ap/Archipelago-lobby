@@ -79,6 +79,55 @@ banned_users = []   # optional
 
 The `redirect_uri` must exactly match a redirect URI registered in your Discord developer application.
 
+# Running apdiff-viewer standalone
+
+`apdiff-viewer` renders side-by-side diffs of `.apworld` zip contents for PR reviewers. It ships as a separate service with its own postgres and a host directory for the apworld blob store, so it deploys independently of the lobby. Source under [apdiff-viewer/](apdiff-viewer/).
+
+Bring it up from a fresh clone:
+
+```
+cargo build --release --bin apdiff-viewer
+cp target/release/apdiff-viewer taskcluster/docker/apdiff-viewer/build-result
+cd apdiff-viewer
+cp docker-compose.yml.example docker-compose.yml
+# edit changeme placeholders; set APDIFF_PUBLIC_BASE_URL to the externally
+# reachable URL — it must match what your PR-validation CI side will POST to
+docker compose up -d
+```
+
+The diesel migration applies on first start. Smoke-test the POST path:
+
+```
+mkdir -p /tmp/sub/{apworlds,annotations}
+cp some.apworld /tmp/sub/apworlds/some-0.1.0.apworld
+echo '{"pr_number":1,"commit_sha":"deadbeef","added":[{"world_name":"some","version":"0.1.0"}]}' > /tmp/sub/manifest.json
+echo '{"worlds":{"some":{"world_name":"Some","added_versions":["0.1.0"],"removed_versions":[],"checksums":{}}}}' > /tmp/sub/changes.json
+tar -C /tmp/sub -cf /tmp/sub.tar .
+curl -fsS -X POST -H "X-Api-Key: changeme" --data-binary @/tmp/sub.tar http://localhost:8001/api/submissions
+```
+
+The response is `{ "id": "...", "url": "..." }`. Open the URL in a browser to see the rendered diff.
+
+## Required secrets (apdiff-viewer)
+
+| Variable | Where | Notes |
+|---|---|---|
+| `POSTGRES_PASSWORD` (apdiff stack) | `postgres` service env | Mirror in this stack's `DATABASE_URL`. Independent of the lobby's postgres. |
+| `DATABASE_URL` | `apdiff-viewer` service env | `postgres://postgres:<password>@postgres:5432/apdiff` |
+| `APDIFF_API_KEY` | `apdiff-viewer` service env | Auth for `POST /api/submissions`. Share with the CI side that POSTs tarballs. |
+| `FUZZ_API_KEY` | `apdiff-viewer` service env | Inherited from the legacy fuzz-results endpoints. Required at startup even if those routes go unused. |
+
+## Other deployment-specific config (apdiff-viewer)
+
+| Variable | Purpose |
+|---|---|
+| `APDIFF_STORAGE_ROOT` | Path inside the container for the blob store. Bind-mount it from a host dir. |
+| `APDIFF_PUBLIC_BASE_URL` | The externally-reachable URL prefix. Used to build the `url` field of the POST response so CI can post it into PR comments. |
+| `ROCKET_ADDRESS` | Set to `0.0.0.0` to expose the service from the container. |
+| `TASKCLUSTER_ROOT_URL` (plus credentials) | Optional. Set only if you also want the legacy `GET /<task_id>` routes to serve from a Taskcluster instance. Leave unset for submission-only deployments — those routes will return an error at request time. |
+
+Both `apdiff-viewer/docker-compose.yml` and the bind-mount dirs (`pgdata/`, `blobs/`) are gitignored once created, so future `git pull`s won't clobber your edits or data.
+
 # Caveats
 
 When working on the `ap-worker`, if you change the python dependencies, you
