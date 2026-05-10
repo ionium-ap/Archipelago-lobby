@@ -19,6 +19,7 @@ use semver::Version;
 use crate::apworld::FileTree;
 use crate::diff::Annotations;
 
+pub mod submission;
 pub mod tc;
 
 /// Apworld name conventionally used as the parent of `manual_*` worlds.

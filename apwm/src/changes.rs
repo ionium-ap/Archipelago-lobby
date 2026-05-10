@@ -13,12 +13,12 @@ pub enum Checksum {
     Hash(String),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Changes {
     pub worlds: BTreeMap<String, WorldChanges>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorldChanges {
     pub world_name: String,
     pub added_versions: Vec<Version>,

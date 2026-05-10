@@ -173,6 +173,33 @@ async fn get_task_diffs(
         tree_cache.inner(),
     )
     .await?;
+    render_diffs(&source, task_id, &params).await
+}
+
+#[rocket::get("/submission/<id>?<params..>")]
+async fn get_submission_diffs(
+    id: &str,
+    params: HashMap<String, String>,
+    pool: &State<diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>>,
+    blobs: &State<Arc<blob_store::BlobStore>>,
+    tree_cache: &State<TreeCache>,
+) -> Result<IndexPage> {
+    let source = source::submission::SubmissionSource::load(
+        pool.inner(),
+        blobs.inner(),
+        tree_cache.inner(),
+        id,
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("submission {id} not found"))?;
+    render_diffs(&source, id, &params).await
+}
+
+async fn render_diffs(
+    source: &dyn ArtifactSource,
+    page_id: &str,
+    params: &HashMap<String, String>,
+) -> Result<IndexPage> {
     let changes = source.changes_json().await?;
 
     let apworld_diffs = try_join_all(
@@ -184,25 +211,21 @@ async fn get_task_diffs(
                     .iter()
                     .any(|v| !matches!(wc.checksums.get(v), Some(Checksum::Supported)))
             })
-            .map(|(apworld_name, world_changes)| {
-                let source = &source;
-                let params = &params;
-                async move {
-                    let from_override = params.get(&format!("{apworld_name}_from"));
-                    process_world(
-                        source,
-                        &apworld_name,
-                        world_changes,
-                        from_override.map(|s| s.as_str()),
-                    )
-                    .await
-                }
+            .map(|(apworld_name, world_changes)| async move {
+                let from_override = params.get(&format!("{apworld_name}_from"));
+                process_world(
+                    source,
+                    &apworld_name,
+                    world_changes,
+                    from_override.map(|s| s.as_str()),
+                )
+                .await
             }),
     )
     .await?;
 
     Ok(IndexPage {
-        task_id: task_id.to_string(),
+        task_id: page_id.to_string(),
         css_version: CSS_VERSION,
         apworld_diffs,
     })
@@ -429,7 +452,15 @@ async fn main() -> anyhow::Result<()> {
         .manage(apdiff_api_key)
         .manage(blob_store)
         .manage(submission_config)
-        .mount("/", routes![get_task_diffs, dist_static, get_test_results])
+        .mount(
+            "/",
+            routes![
+                get_task_diffs,
+                get_submission_diffs,
+                dist_static,
+                get_test_results
+            ],
+        )
         .mount("/api", api::routes())
         .launch()
         .await
