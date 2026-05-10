@@ -46,7 +46,7 @@ variables:
 
 .cargo-build: &cargo-build
   stage: rust-build
-  image: rust:1.92-slim-trixie
+  image: rust:1.92-trixie
   tags:
     - docker-sandboxed
     - linux
