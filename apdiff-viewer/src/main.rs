@@ -81,6 +81,13 @@ pub(crate) struct TcConfig {
 
 pub(crate) struct TreeCache(pub(crate) Mutex<lru::LruCache<String, Arc<apworld::FileTree>>>);
 
+/// Runtime config for the submission ingestion + render path.
+pub(crate) struct SubmissionConfig {
+    /// Externally-reachable base URL used to build the `url` field of the
+    /// `POST /api/submissions` response.
+    pub(crate) public_base_url: String,
+}
+
 #[derive(Template, WebTemplate)]
 #[template(path = "index.html")]
 struct IndexPage {
@@ -391,6 +398,18 @@ async fn main() -> anyhow::Result<()> {
 
     let fuzz_api_key = guards::FuzzApiKeyConfig(std::env::var("FUZZ_API_KEY")?);
 
+    let apdiff_api_key = guards::ApdiffApiKeyConfig(std::env::var("APDIFF_API_KEY")?);
+
+    let storage_root = PathBuf::from(
+        std::env::var("APDIFF_STORAGE_ROOT").unwrap_or_else(|_| "./apdiff-blobs".into()),
+    );
+    let blob_store = Arc::new(blob_store::BlobStore::new(storage_root));
+
+    let submission_config = SubmissionConfig {
+        public_base_url: std::env::var("APDIFF_PUBLIC_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:8000".into()),
+    };
+
     let tc_config = TcConfig {
         index_namespace_prefix: std::env::var("APWORLD_INDEX_NAMESPACE")
             .unwrap_or_else(|_| "ap.index.world".into()),
@@ -407,6 +426,9 @@ async fn main() -> anyhow::Result<()> {
         .manage(tree_cache)
         .manage(db_pool)
         .manage(fuzz_api_key)
+        .manage(apdiff_api_key)
+        .manage(blob_store)
+        .manage(submission_config)
         .mount("/", routes![get_task_diffs, dist_static, get_test_results])
         .mount("/api", api::routes())
         .launch()
