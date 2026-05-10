@@ -10,7 +10,7 @@ anyhow = "1.0.88"
 askama = { version = "0.15" }
 askama_web = { version = "0.15", features = ["rocket-0.5"] }
 chrono = { version = "0.4", features = ["serde"] }
-diesel = { version = "2.3.5", features = ["chrono"] }
+diesel = { version = "2.3.5", features = ["chrono", "serde_json"] }
 diesel-async = { version = "0.8", features = ["postgres", "deadpool"] }
 diesel_migrations = { version = "2.2.0", features = ["postgres"] }
 dotenvy = "0.15.7"
