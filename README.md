@@ -36,7 +36,7 @@ Generate strong random values for each row. `openssl rand -hex 32` or `openssl r
 |---|---|---|
 | `POSTGRES_PASSWORD` | `postgres` service env | Must also be reflected in the lobby's `DATABASE_URL`. |
 | `DATABASE_URL` | `lobby` service env | Form: `postgres://postgres:<POSTGRES_PASSWORD>@postgres:5432/aplobby`. Keep the password in sync with `POSTGRES_PASSWORD`. |
-| `ROCKET_SECRET_KEY` | `lobby` service env | Signs encrypted session cookies. Must be ≥ 32 bytes. |
+| `ROCKET_SECRET_KEY` | `lobby` service env | Signs encrypted session cookies. Must be exactly 44 base64 chars (32 raw bytes), 88 base64 chars (64 raw bytes), or 64 hex chars (32 raw bytes). Generate with `openssl rand -base64 32`. Other lengths fail at startup with `InvalidLength`. |
 | `ADMIN_TOKEN` | `lobby` service env | Auth for admin endpoints (`X-Api-Key` header / Basic Auth). |
 | `LOBBY_API_KEY` | `generator` service env | **Must equal `ADMIN_TOKEN`** — the generator worker authenticates back to the lobby API with this. |
 | `YAML_VALIDATION_QUEUE_TOKEN` | `lobby` and `yaml-checker` services | Same value in both places (queue auth between lobby and worker). |

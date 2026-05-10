@@ -1,0 +1,27 @@
+name: Mirror to GitLab
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-to-gitlab
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push main to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git push --force-with-lease \
+            "https://oauth2:${GITLAB_TOKEN}@git.mooinglemur.com/ionium-ap/Archipelago-lobby.git" \
+            main:main

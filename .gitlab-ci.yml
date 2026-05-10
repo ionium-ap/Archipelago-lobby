@@ -1,0 +1,223 @@
+# Image build pipeline for git.mooinglemur.com/ionium-ap/Archipelago-lobby
+#
+# Builds and pushes the Docker images other ionium-ap projects (and the lobby
+# itself) consume:
+#   - apwm           : the index management Rust binary
+#   - apdiff-viewer  : PR diff rendering service
+#   - ap-worker      : Python harness (self_check.py, checker.py, generation, etc.)
+#   - ap-lobby       : the lobby itself
+#   - community-ap-tools
+#
+# Pattern for each Rust binary: a cargo job builds the binary in a rust:slim
+# image (with the workspace cache), stages it as `build-result` next to its
+# Dockerfile, then a docker job runs `docker build` against that staged context.
+# This mirrors the build-result convention the Dockerfiles already expect from
+# the legacy Taskcluster setup, so the Dockerfiles don't need to change.
+#
+# The ap-worker image is multi-stage and self-contained — no separate cargo
+# stage needed.
+
+# Only run on the canonical GitLab instance. If this YAML ends up on a fork,
+# a different instance, or a mirror elsewhere, no pipeline is created at all.
+workflow:
+  rules:
+    - if: '$CI_SERVER_HOST == "git.mooinglemur.com"'
+
+default:
+  interruptible: true
+
+stages:
+  - rust-build
+  - image
+
+variables:
+  DOCKER_TLS_CERTDIR: ""
+
+# ---- shared anchors ----
+
+.rust-cache: &rust-cache
+  cache:
+    key: cargo-$CI_COMMIT_REF_SLUG
+    paths:
+      - target/
+      - .cargo/
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
+
+.cargo-build: &cargo-build
+  stage: rust-build
+  image: rust:1.92-slim-trixie
+  tags:
+    - docker-sandboxed
+    - linux
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends pkg-config libssl-dev libpq-dev git ca-certificates mold
+    - rm -rf /var/lib/apt/lists/*
+  <<: *rust-cache
+
+.docker-build: &docker-build
+  stage: image
+  image: docker:25
+  services:
+    - docker:25-dind
+  tags:
+    - docker-sandboxed
+    - linux
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+# ---- rust-build stage ----
+
+build-apwm:
+  <<: *cargo-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - cargo build --release --bin apwm --features cli
+    - mkdir -p artifacts/apwm
+    - cp target/release/apwm artifacts/apwm/build-result
+  artifacts:
+    paths: [artifacts/apwm/]
+    expire_in: 1 day
+
+build-apdiff-viewer:
+  <<: *cargo-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - cargo build --release --bin apdiff-viewer
+    - mkdir -p artifacts/apdiff-viewer
+    - cp target/release/apdiff-viewer artifacts/apdiff-viewer/build-result
+  artifacts:
+    paths: [artifacts/apdiff-viewer/]
+    expire_in: 1 day
+
+build-ap-lobby:
+  <<: *cargo-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - cargo build --release --bin ap-lobby
+    - mkdir -p artifacts/ap-lobby
+    - cp target/release/ap-lobby artifacts/ap-lobby/build-result
+  artifacts:
+    paths: [artifacts/ap-lobby/]
+    expire_in: 1 day
+
+build-community-ap-tools:
+  <<: *cargo-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - cargo build --release --bin community-ap-tools
+    - mkdir -p artifacts/community-ap-tools
+    - cp target/release/community-ap-tools artifacts/community-ap-tools/build-result
+  artifacts:
+    paths: [artifacts/community-ap-tools/]
+    expire_in: 1 day
+
+# ---- image stage ----
+
+image-apwm:
+  <<: *docker-build
+  needs: [build-apwm]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/apwm"
+    - cp artifacts/apwm/build-result taskcluster/docker/apwm/build-result
+    - docker build
+        -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        -t "$IMAGE:latest"
+        -f taskcluster/docker/apwm/Dockerfile
+        taskcluster/docker/apwm
+    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+
+image-apdiff-viewer:
+  <<: *docker-build
+  needs: [build-apdiff-viewer]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/apdiff-viewer"
+    - cp artifacts/apdiff-viewer/build-result taskcluster/docker/apdiff-viewer/build-result
+    - docker build
+        -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        -t "$IMAGE:latest"
+        -f taskcluster/docker/apdiff-viewer/Dockerfile
+        taskcluster/docker/apdiff-viewer
+    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+
+image-ap-lobby:
+  <<: *docker-build
+  needs: [build-ap-lobby]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/ap-lobby"
+    - cp artifacts/ap-lobby/build-result taskcluster/docker/ap-lobby/build-result
+    - docker build
+        -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        -t "$IMAGE:latest"
+        -f taskcluster/docker/ap-lobby/Dockerfile
+        taskcluster/docker/ap-lobby
+    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+
+image-community-ap-tools:
+  <<: *docker-build
+  needs: [build-community-ap-tools]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*"]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/community-ap-tools"
+    - cp artifacts/community-ap-tools/build-result taskcluster/docker/community-ap-tools/build-result
+    - docker build
+        -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        -t "$IMAGE:latest"
+        -f taskcluster/docker/community-ap-tools/Dockerfile
+        taskcluster/docker/community-ap-tools
+    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+
+# ap-worker is built from the repo root because its Dockerfile COPYs
+# both ./ap-worker (the Python harness) and the Dockerfile-adjacent
+# setup.sh / prepare_worlds.sh / host.yaml.
+image-ap-worker:
+  <<: *docker-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - "ap-worker/**/*"
+        - "taskcluster/docker/ap-worker/**/*"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/ap-worker"
+    - docker build
+        --build-arg SRC=.
+        --build-arg DOCKER_SRC=taskcluster/docker/ap-worker
+        -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        -t "$IMAGE:latest"
+        -f taskcluster/docker/ap-worker/Dockerfile
+        .
+    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
