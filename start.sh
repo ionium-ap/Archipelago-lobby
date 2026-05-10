@@ -7,10 +7,21 @@ DC="$SCRIPT_DIR/dc.sh"
 
 if [[ ! -f "./Rocket.toml" ]]; then
     echo "== FIRST SETUP =="
+    echo
+    echo "What public URL will the lobby be reachable at?"
+    echo "  - For local dev, just press enter (defaults to http://127.0.0.1:8000)"
+    echo "  - For a real deployment, enter the URL your reverse proxy serves,"
+    echo "    e.g. https://lobby.example.com  (no trailing slash, no path)"
+    read -r _public_url
+    _public_url=${_public_url:-http://127.0.0.1:8000}
+
+    echo
     echo "Go to https://discord.com/developers/applications"
     echo "Create an application (or select an existing one)"
-    echo "In oauth2 add a redirect to \"http://127.0.0.1:8000/auth/oauth\""
+    echo "In oauth2 add a redirect to \"${_public_url}/auth/oauth\""
+    echo "  (this MUST match the redirect_uri written to Rocket.toml exactly)"
     echo "Click on \"save changes\" then \"Reset Secret\""
+    echo
 
     echo "Paste the client ID:"
     read -r _client_id
@@ -24,10 +35,13 @@ if [[ ! -f "./Rocket.toml" ]]; then
 provider = "Discord"
 client_id = "$_client_id"
 client_secret = "$_client_secret"
-redirect_uri = "http://127.0.0.1:8000/auth/oauth"
+redirect_uri = "${_public_url}/auth/oauth"
 admins = [$_admin_id]
 EOF
 
+    # NOTE: community mode keeps a localhost redirect by default since it's
+    # primarily a dev/testing path. Edit Rocket.community.toml manually if
+    # you're running community mode on a public URL.
     cat > Rocket.community.toml <<EOF
 [default.oauth.discord]
 provider = "Discord"
