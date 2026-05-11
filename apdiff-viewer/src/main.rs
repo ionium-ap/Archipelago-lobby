@@ -92,6 +92,11 @@ pub(crate) struct SubmissionConfig {
 #[template(path = "index.html")]
 struct IndexPage {
     task_id: String,
+    /// URL the from-version dropdown form should submit back to. Distinct
+    /// from `task_id` so the same template serves both the TC `/<task_id>`
+    /// route and the `/submission/<id>` route without confusing the form
+    /// action with the legacy URL shape.
+    self_path: String,
     css_version: &'static str,
     apworld_diffs: Vec<ApworldDiff>,
 }
@@ -181,7 +186,7 @@ async fn get_task_diffs(
         tree_cache.inner(),
     )
     .await?;
-    render_diffs(&source, task_id, &params).await
+    render_diffs(&source, task_id, format!("/{task_id}"), &params).await
 }
 
 #[rocket::get("/submission/<id>?<params..>")]
@@ -200,12 +205,13 @@ async fn get_submission_diffs(
     )
     .await?
     .ok_or_else(|| anyhow::anyhow!("submission {id} not found"))?;
-    render_diffs(&source, id, &params).await
+    render_diffs(&source, id, format!("/submission/{id}"), &params).await
 }
 
 async fn render_diffs(
     source: &dyn ArtifactSource,
     page_id: &str,
+    self_path: String,
     params: &HashMap<String, String>,
 ) -> Result<IndexPage> {
     let changes = source.changes_json().await?;
@@ -234,6 +240,7 @@ async fn render_diffs(
 
     Ok(IndexPage {
         task_id: page_id.to_string(),
+        self_path,
         css_version: CSS_VERSION,
         apworld_diffs,
     })

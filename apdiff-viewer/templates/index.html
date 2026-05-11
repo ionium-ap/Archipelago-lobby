@@ -208,7 +208,7 @@
     </div>
     {% endfor %}
 
-    <form id="version-form" method="get" action="/{{ task_id }}" style="display:none"></form>
+    <form id="version-form" method="get" action="{{ self_path }}" style="display:none"></form>
     {% else %}
     <div class="no-diffs">
         <h2>No diffs found for task: {{ task_id }}</h2>

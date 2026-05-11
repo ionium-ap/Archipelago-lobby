@@ -46,9 +46,10 @@ services:
       ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       RUST_LOG: info
       ROCKET_ADDRESS: "0.0.0.0"
-      # `normal` logs every request; `critical` (release default) suppresses
-      # them. Bump to `debug` for very noisy troubleshooting.
-      ROCKET_LOG_LEVEL: normal
+      # Rocket's request logging is gated by this level. The fork uses
+      # tracing::Level values (error, warn, info, debug, trace); release mode
+      # defaults to `error`, so requests are silent unless this is bumped.
+      ROCKET_LOG_LEVEL: info
     ports:
       - "127.0.0.1:8001:8000"
     depends_on:
