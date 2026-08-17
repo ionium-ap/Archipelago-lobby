@@ -1,4 +1,4 @@
-FROM rust:1.92-slim-trixie
+FROM docker.io/library/rust:1.92-slim-trixie
 
 COPY setup.sh setup.sh
 RUN bash ./setup.sh

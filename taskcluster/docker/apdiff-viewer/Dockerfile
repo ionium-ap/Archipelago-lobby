@@ -1,4 +1,4 @@
-FROM debian:13-slim
+FROM docker.io/library/debian:13-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt update && \
