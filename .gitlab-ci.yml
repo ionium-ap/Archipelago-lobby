@@ -20,6 +20,10 @@
 # Images are built on every branch and always pushed as :sha-<short sha>. The
 # moving tags are branch-gated: main pushes :latest, ionium-dev pushes :dev,
 # and every other branch pushes no moving tag at all.
+#
+# Every job's `changes:` filter includes .gitlab-ci.yml -- the build recipe
+# itself. Otherwise a fix to this file can only be deployed via a manual
+# web-triggered run.
 
 # Only run on the canonical GitLab instance. If this YAML ends up on a fork,
 # a different instance, or a mirror elsewhere, no pipeline is created at all.
@@ -49,7 +53,7 @@ stages:
   stage: rust-build
   image: rust:1.92-trixie
   tags:
-    - docker
+    - linux
     - k8s
   before_script:
     - apt-get update
@@ -63,7 +67,7 @@ stages:
   stage: image
   image: quay.io/buildah/stable
   tags:
-    - docker
+    - linux
     - k8s
   variables:
     CONTAINERS_STORAGE_CONF: /tmp/storage.conf
@@ -116,7 +120,7 @@ build-apwm:
   <<: *cargo-build
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*"]
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin apwm --features cli
@@ -130,7 +134,7 @@ build-apdiff-viewer:
   <<: *cargo-build
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*"]
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin apdiff-viewer
@@ -144,7 +148,7 @@ build-ap-lobby:
   <<: *cargo-build
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*"]
+      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin ap-lobby
@@ -158,7 +162,7 @@ build-community-ap-tools:
   <<: *cargo-build
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*"]
+      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin community-ap-tools
@@ -175,7 +179,7 @@ image-apwm:
   needs: [build-apwm]
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*"]
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/apwm"
@@ -191,7 +195,7 @@ image-apdiff-viewer:
   needs: [build-apdiff-viewer]
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*"]
+      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/apdiff-viewer"
@@ -207,7 +211,7 @@ image-ap-lobby:
   needs: [build-ap-lobby]
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*"]
+      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-lobby"
@@ -223,7 +227,7 @@ image-community-ap-tools:
   needs: [build-community-ap-tools]
   rules:
     - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*"]
+      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*", ".gitlab-ci.yml"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/community-ap-tools"
@@ -244,6 +248,7 @@ image-ap-worker:
       changes:
         - "ap-worker/**/*"
         - "taskcluster/docker/ap-worker/**/*"
+        - ".gitlab-ci.yml"
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-worker"
