@@ -10,12 +10,16 @@
 #
 # Pattern for each Rust binary: a cargo job builds the binary in a rust:slim
 # image (with the workspace cache), stages it as `build-result` next to its
-# Dockerfile, then a docker job runs `docker build` against that staged context.
+# Dockerfile, then an image job runs `buildah build` against that staged context.
 # This mirrors the build-result convention the Dockerfiles already expect from
 # the legacy Taskcluster setup, so the Dockerfiles don't need to change.
 #
 # The ap-worker image is multi-stage and self-contained — no separate cargo
 # stage needed.
+#
+# Images are built on every branch and always pushed as :sha-<short sha>. The
+# moving tags are branch-gated: main pushes :latest, ionium-dev pushes :dev,
+# and every other branch pushes no moving tag at all.
 
 # Only run on the canonical GitLab instance. If this YAML ends up on a fork,
 # a different instance, or a mirror elsewhere, no pipeline is created at all.
@@ -29,9 +33,6 @@ default:
 stages:
   - rust-build
   - image
-
-variables:
-  DOCKER_TLS_CERTDIR: ""
 
 # ---- shared anchors ----
 
@@ -49,30 +50,72 @@ variables:
   image: rust:1.92-trixie
   tags:
     - docker
-    - linux
+    - k8s
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends pkg-config libssl-dev libpq-dev git ca-certificates mold
     - rm -rf /var/lib/apt/lists/*
   <<: *rust-cache
 
-.docker-build: &docker-build
+# Buildah, not dind: nothing untrusted is built here, so this needs a builder rather than an
+# isolation boundary. Storage setup mirrors Archipelago-index-ci's working pipeline.
+.buildah-build: &buildah-build
   stage: image
-  image: docker:25
-  services:
-    - docker:25-dind
+  image: quay.io/buildah/stable
   tags:
-    - docker-sandboxed
-    - linux
+    - docker
+    - k8s
+  variables:
+    CONTAINERS_STORAGE_CONF: /tmp/storage.conf
   before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # Native kernel overlay. The image's storage.conf sets mount_program = fuse-overlayfs, but
+    # FUSE needs CAP_SYS_ADMIN, which this tier lacks; /dev/fuse does not help, it fails EPERM
+    # at mount time. Dropping mount_program lets buildah mount overlay directly.
+    #
+    # Must be a config file via $CONTAINERS_STORAGE_CONF, not `--storage-driver overlay`:
+    # containers-storage persists driver options into the graphroot on first use, so the flag
+    # inherits mount_program anyway depending on what touched the store first.
+    #
+    # graphroot stays on the container filesystem (node NVMe), not the build dir (emptyDir).
+    - |
+      cat > "$CONTAINERS_STORAGE_CONF" <<'CONF'
+      [storage]
+      driver = "overlay"
+      runroot = "/var/run/containers/storage"
+      graphroot = "/var/lib/containers/storage"
+      [storage.options.overlay]
+      mountopt = "nodev"
+      CONF
+    # Build output says nothing about storage. GraphOptions shows whether this config won:
+    # overlay.mountopt=nodev alone is right, a mount_program entry means it didn't. A fall back
+    # to vfs is slow, not broken.
+    - buildah info
+    - echo "$CI_REGISTRY_PASSWORD" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # Which moving tag (if any) this branch owns. Everything else gets only the
+    # immutable sha- tag.
+    - |
+      case "$CI_COMMIT_BRANCH" in
+        main)        MOVING_TAG=latest ;;
+        ionium-dev)  MOVING_TAG=dev ;;
+        *)           MOVING_TAG= ;;
+      esac
+      echo "branch=$CI_COMMIT_BRANCH moving tag=${MOVING_TAG:-<none>}"
+      # push_image <image> -- pushes :sha-<short sha> plus the branch's moving tag.
+      # Tagged after the build so both names are guaranteed to be the same image.
+      push_image() {
+        buildah push "$1:sha-$CI_COMMIT_SHORT_SHA"
+        if [ -n "$MOVING_TAG" ]; then
+          buildah tag "$1:sha-$CI_COMMIT_SHORT_SHA" "$1:$MOVING_TAG"
+          buildah push "$1:$MOVING_TAG"
+        fi
+      }
 
 # ---- rust-build stage ----
 
 build-apwm:
   <<: *cargo-build
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
@@ -86,7 +129,7 @@ build-apwm:
 build-apdiff-viewer:
   <<: *cargo-build
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
@@ -100,7 +143,7 @@ build-apdiff-viewer:
 build-ap-lobby:
   <<: *cargo-build
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
@@ -114,7 +157,7 @@ build-ap-lobby:
 build-community-ap-tools:
   <<: *cargo-build
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
@@ -128,96 +171,86 @@ build-community-ap-tools:
 # ---- image stage ----
 
 image-apwm:
-  <<: *docker-build
+  <<: *buildah-build
   needs: [build-apwm]
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/apwm"
     - cp artifacts/apwm/build-result taskcluster/docker/apwm/build-result
-    - docker build
+    - buildah build
         -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-        -t "$IMAGE:latest"
         -f taskcluster/docker/apwm/Dockerfile
         taskcluster/docker/apwm
-    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
+    - push_image "$IMAGE"
 
 image-apdiff-viewer:
-  <<: *docker-build
+  <<: *buildah-build
   needs: [build-apdiff-viewer]
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/apdiff-viewer"
     - cp artifacts/apdiff-viewer/build-result taskcluster/docker/apdiff-viewer/build-result
-    - docker build
+    - buildah build
         -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-        -t "$IMAGE:latest"
         -f taskcluster/docker/apdiff-viewer/Dockerfile
         taskcluster/docker/apdiff-viewer
-    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
+    - push_image "$IMAGE"
 
 image-ap-lobby:
-  <<: *docker-build
+  <<: *buildah-build
   needs: [build-ap-lobby]
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-lobby"
     - cp artifacts/ap-lobby/build-result taskcluster/docker/ap-lobby/build-result
-    - docker build
+    - buildah build
         -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-        -t "$IMAGE:latest"
         -f taskcluster/docker/ap-lobby/Dockerfile
         taskcluster/docker/ap-lobby
-    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
+    - push_image "$IMAGE"
 
 image-community-ap-tools:
-  <<: *docker-build
+  <<: *buildah-build
   needs: [build-community-ap-tools]
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*"]
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/community-ap-tools"
     - cp artifacts/community-ap-tools/build-result taskcluster/docker/community-ap-tools/build-result
-    - docker build
+    - buildah build
         -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-        -t "$IMAGE:latest"
         -f taskcluster/docker/community-ap-tools/Dockerfile
         taskcluster/docker/community-ap-tools
-    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
+    - push_image "$IMAGE"
 
 # ap-worker is built from the repo root because its Dockerfile COPYs
 # both ./ap-worker (the Python harness) and the Dockerfile-adjacent
 # setup.sh / prepare_worlds.sh / host.yaml.
 image-ap-worker:
-  <<: *docker-build
+  <<: *buildah-build
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
       changes:
         - "ap-worker/**/*"
         - "taskcluster/docker/ap-worker/**/*"
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-worker"
-    - docker build
+    - buildah build
         --build-arg SRC=.
         --build-arg DOCKER_SRC=taskcluster/docker/ap-worker
         -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-        -t "$IMAGE:latest"
         -f taskcluster/docker/ap-worker/Dockerfile
         .
-    - docker push "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
+    - push_image "$IMAGE"

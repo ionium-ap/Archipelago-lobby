@@ -2,7 +2,7 @@ name: Mirror to GitLab
 
 on:
   push:
-    branches: [main]
+    branches: [main, ionium-prod, ionium-dev]
   workflow_dispatch:
 
 concurrency:
@@ -18,18 +18,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push main to GitLab
+      - name: Push mirrored branches to GitLab
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
         run: |
+          set -euo pipefail
+
           GITLAB_URL="https://oauth2:${GITLAB_TOKEN}@git.mooinglemur.com/ionium-ap/Archipelago-lobby.git"
+          git remote remove gitlab 2>/dev/null || true
           git remote add gitlab "$GITLAB_URL"
 
-          # Populate refs/remotes/gitlab/main so --force-with-lease has a
-          # reference point. If gitlab is empty / has no main yet, fall through
-          # to a plain push for the initial sync.
-          if git fetch gitlab main 2>/dev/null; then
-            git push --force-with-lease gitlab main:main
-          else
-            git push gitlab main:main
-          fi
+          # Every run resyncs all mirrored branches, not just the one that
+          # triggered it, so a push to any of them repairs the others too.
+          # fetch-depth: 0 should already have populated refs/remotes/origin/*;
+          # fetch explicitly so this does not depend on checkout's refspec.
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+
+          for branch in main ionium-prod ionium-dev; do
+            # A branch that does not exist on GitHub is skipped, not an error.
+            if ! git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
+              echo "origin/$branch does not exist, skipping"
+              continue
+            fi
+
+            # Populate refs/remotes/gitlab/$branch so --force-with-lease has a
+            # reference point. If gitlab is empty / has no such branch yet, fall
+            # through to a plain push for the initial sync.
+            if git fetch gitlab "$branch" 2>/dev/null; then
+              git push --force-with-lease gitlab "refs/remotes/origin/$branch:refs/heads/$branch"
+            else
+              git push gitlab "refs/remotes/origin/$branch:refs/heads/$branch"
+            fi
+          done
