@@ -32,7 +32,7 @@ use wq::{JobId, JobStatus};
 
 use crate::error::Result;
 use crate::utils::RenamedFile;
-use crate::{Context, TplContext};
+use crate::{Context, TplContext, LobbyConfig};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/gen.html")]
@@ -45,11 +45,12 @@ struct GenRoomTpl<'a> {
 
 #[rocket::get("/room/<room_id>/generation")]
 #[tracing::instrument(skip(session, ctx))]
-async fn gen_room(
+async fn gen_room<'a>(
     room_id: RoomId,
     session: LoggedInSession,
-    ctx: &State<Context>,
-) -> Result<GenRoomTpl<'_>> {
+    ctx: &'a State<Context>,
+    lobby_config: &State<LobbyConfig>,
+) -> Result<GenRoomTpl<'a>> {
     let mut conn = ctx.db_pool.get().await?;
     let room = db::get_room(room_id, &mut conn).await?;
     let is_my_room = session.0.is_admin || session.user_id() == room.settings.author_id;
@@ -64,7 +65,7 @@ async fn gen_room(
     let current_gen = db::get_generation_for_room(room_id, &mut conn).await?;
 
     Ok(GenRoomTpl {
-        base: TplContext::from_session("room", session.0, ctx).await,
+        base: TplContext::from_session("room", session.0, ctx, lobby_config, Some(format!("{} - Generation", room.settings.name))).await,
         generation_checklist,
         room,
         current_gen,

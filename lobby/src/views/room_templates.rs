@@ -13,7 +13,7 @@ use rocket::FromForm;
 use rocket::{form::Form, get, post, response::Redirect, State};
 use std::str::FromStr;
 
-use crate::{Context, TplContext};
+use crate::{Context, TplContext, LobbyConfig};
 
 use super::manifest_editor::manifest_from_form;
 use super::room_settings::{
@@ -58,12 +58,13 @@ pub struct AssociatedRoomsTpl<'a> {
 async fn list_templates<'a>(
     ctx: &State<Context>,
     session: LoggedInSession,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<ListRoomTemplatesTpl<'a>> {
     let mut conn = ctx.db_pool.get().await?;
     let room_templates = db::get_room_templates_for_author(session.user_id(), &mut conn).await?;
 
     Ok(ListRoomTemplatesTpl {
-        base: TplContext::from_session("room-templates", session.0, ctx).await,
+        base: TplContext::from_session("room-templates", session.0, ctx, lobby_config, Some("Room Templates".to_string())).await,
         room_templates,
     })
 }
@@ -74,10 +75,11 @@ async fn create_template<'a>(
     index_manager: &State<IndexManager>,
     session: LoggedInSession,
     ctx: &State<Context>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<EditRoomTemplateTpl<'a>> {
     let index = index_manager.index.read().await;
 
-    let base = TplContext::from_session("room-templates", session.0, ctx).await;
+    let base = TplContext::from_session("room-templates", session.0, ctx, lobby_config, Some("Create Room Template".to_string())).await;
     Ok(EditRoomTemplateTpl {
         tpl: None,
         tpl_settings_form: RoomSettingsBuilder::new(
@@ -149,6 +151,7 @@ async fn edit_template<'a>(
     index_manager: &State<IndexManager>,
     ctx: &State<Context>,
     session: LoggedInSession,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<EditRoomTemplateTpl<'a>> {
     let mut conn = ctx.db_pool.get().await?;
     let template = db::get_room_template_by_id(tpl_id, &mut conn).await?;
@@ -159,7 +162,7 @@ async fn edit_template<'a>(
 
     let index = index_manager.index.read().await;
 
-    let base = TplContext::from_session("template", session.0, ctx).await;
+    let base = TplContext::from_session("template", session.0, ctx, lobby_config, Some(format!("Room Template - {}", template.tpl_name))).await;
     Ok(EditRoomTemplateTpl {
         tpl: Some(template.clone()),
         tpl_settings_form: RoomSettingsBuilder::new_with_template(
@@ -258,6 +261,7 @@ pub async fn list_associated_rooms<'a>(
     tpl_id: RoomTemplateId,
     page: Option<u64>,
     session: LoggedInSession,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<AssociatedRoomsTpl<'a>> {
     let mut conn = ctx.db_pool.get().await?;
     let tpl = db::get_room_template_by_id(tpl_id, &mut conn).await?;
@@ -272,7 +276,7 @@ pub async fn list_associated_rooms<'a>(
     let (rooms, max_pages) =
         db::list_rooms_from_template(tpl_id, session.user_id(), current_page, &mut conn).await?;
     Ok(AssociatedRoomsTpl {
-        base: TplContext::from_session("template", session.0, ctx).await,
+        base: TplContext::from_session("template", session.0, ctx, lobby_config, Some(format!("Room Templates - {} - Associated Rooms", tpl.tpl_name))).await,
         tpl,
         rooms,
         current_page,

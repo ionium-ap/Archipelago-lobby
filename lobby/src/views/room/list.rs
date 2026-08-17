@@ -6,7 +6,7 @@ use askama_web::WebTemplate;
 use rocket::get;
 use rocket::State;
 
-use crate::{Context, TplContext};
+use crate::{Context, TplContext, LobbyConfig};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/list.html")]
@@ -23,6 +23,7 @@ async fn my_rooms<'a>(
     ctx: &State<Context>,
     session: LoggedInSession,
     page: Option<u64>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<ListRoomsTpl<'a>> {
     let author_filter = if session.0.is_admin {
         Author::Any
@@ -41,7 +42,7 @@ async fn my_rooms<'a>(
     .await?;
 
     Ok(ListRoomsTpl {
-        base: TplContext::from_session("rooms", session.0, ctx).await,
+        base: TplContext::from_session("rooms", session.0, ctx, lobby_config, Some("All Rooms".to_string())).await,
         rooms,
         current_page,
         max_pages,

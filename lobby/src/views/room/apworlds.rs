@@ -12,7 +12,7 @@ use crate::session::LoggedInSession;
 use crate::session::Session;
 use crate::utils::ZipFile;
 use crate::views::filters;
-use crate::{Context, TplContext};
+use crate::{Context, TplContext, LobbyConfig};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/apworlds.html")]
@@ -31,6 +31,7 @@ pub async fn room_worlds<'a>(
     index_manager: &State<IndexManager>,
     redirect_to: &RedirectTo,
     ctx: &State<Context>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<RoomApworldsTpl<'a>> {
     redirect_to.set(&format!("/room/{room_id}"));
 
@@ -51,7 +52,7 @@ pub async fn room_worlds<'a>(
     apworlds.sort_by_key(|(_, (world, _))| world.display_name.to_lowercase());
 
     Ok(RoomApworldsTpl {
-        base: TplContext::from_session("room", session, ctx).await,
+        base: TplContext::from_session("room", session, ctx, lobby_config, Some(format!("{} - Apworlds", room.settings.name))).await,
         is_my_room,
         apworlds,
         room,

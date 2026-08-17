@@ -58,6 +58,11 @@ pub struct Context {
     redis_pool: RedisPool,
 }
 
+#[derive(Debug, Clone)]
+pub struct LobbyConfig {
+    admin_rooms_only: bool
+}
+
 const CSS_VERSION: &str = std::env!("CSS_VERSION");
 const JS_VERSION: &str = std::env!("JS_VERSION");
 
@@ -65,16 +70,18 @@ const JS_VERSION: &str = std::env!("JS_VERSION");
 pub struct TplContext<'a> {
     is_admin: bool,
     is_logged_in: bool,
+    admin_rooms_only: bool,
     cur_module: &'a str,
     user_id: Option<i64>,
     err_msg: Vec<String>,
     warning_msg: Vec<String>,
     css_version: &'a str,
     js_version: &'a str,
+    page_title: String,
 }
 
 impl<'a> TplContext<'a> {
-    pub async fn from_session(module: &'a str, session: Session, ctx: &Context) -> Self {
+    pub async fn from_session(module: &'a str, session: Session, ctx: &Context, lobby_config: &LobbyConfig, page_title: Option<String>) -> Self {
         Self {
             cur_module: module,
             is_admin: session.is_admin,
@@ -84,6 +91,11 @@ impl<'a> TplContext<'a> {
             warning_msg: session.retrieve_warnings(ctx).await.unwrap(),
             css_version: CSS_VERSION,
             js_version: JS_VERSION,
+            admin_rooms_only: lobby_config.admin_rooms_only,
+            page_title: page_title.map_or_else(
+                || "Archipelago Lobby".to_string(),
+                |name| format!("Archipelago Lobby - {}", name),
+            ),
         }
     }
 }
@@ -150,6 +162,17 @@ impl Handler for MetricsRoute {
 impl From<MetricsRoute> for Vec<Route> {
     fn from(val: MetricsRoute) -> Self {
         vec![Route::new(Method::Get, "/", val)]
+    }
+}
+
+fn get_lobby_config() -> LobbyConfig {
+    let admin_rooms_only = std::env::var("ADMIN_ROOMS_ONLY")
+        .ok()
+        .map(|v| matches!(v.to_lowercase().as_str(), "true"))
+        .unwrap_or(false);
+
+    return LobbyConfig {
+        admin_rooms_only
     }
 }
 
@@ -243,6 +266,8 @@ pub async fn main() -> crate::error::Result<()> {
         .expect("Failed to create job queue for generation");
     generation_queue.start_reclaim_checker();
 
+    let lobby_config = get_lobby_config();
+
     let options_cache: OptionsCache = std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new()));
 
     let options_gen_queue = OptionsGenQueue::builder("options_gen")
@@ -300,6 +325,7 @@ pub async fn main() -> crate::error::Result<()> {
         .manage(options_gen_queue)
         .manage(options_cache)
         .manage(queue_tokens)
+        .manage(lobby_config)
         .attach(OAuth2::<Discord>::fairing("discord"))
         .attach(OptionsPreloadFairing)
         .launch()

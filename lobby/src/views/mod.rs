@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::db::{self, Room, RoomFilter};
 use crate::error::Result;
 use crate::session::Session;
-use crate::{Context, TplContext};
+use crate::{Context, TplContext, LobbyConfig};
 use askama::Template;
 use askama_web::WebTemplate;
 use diesel::IntoSql;
@@ -99,9 +99,10 @@ async fn root<'a>(
     page: Option<u64>,
     session: Session,
     ctx: &'a State<Context>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<Index<'a>> {
     if !session.is_logged_in {
-        return Ok(Index::Help(help(session, ctx).await?));
+        return Ok(Index::Help(help(session, ctx, lobby_config).await?));
     }
 
     let mut conn = ctx.db_pool.get().await?;
@@ -118,11 +119,11 @@ async fn root<'a>(
     };
 
     if rooms.is_empty() && current_page != 1 {
-        return Box::pin(root(None, session, ctx)).await;
+        return Box::pin(root(None, session, ctx, lobby_config)).await;
     }
 
     Ok(Index::RoomList(IndexTpl {
-        base: TplContext::from_session("index", session, ctx).await,
+        base: TplContext::from_session("index", session, ctx, lobby_config, None).await,
         rooms,
         current_page,
         max_pages,
@@ -131,9 +132,13 @@ async fn root<'a>(
 
 #[get("/help")]
 #[tracing::instrument(skip_all)]
-async fn help<'a>(session: Session, ctx: &'a State<Context>) -> Result<HelpTpl<'a>> {
+async fn help<'a>(
+    session: Session,
+    ctx: &'a State<Context>,
+    lobby_config: &State<LobbyConfig>,
+) -> Result<HelpTpl<'a>> {
     Ok(HelpTpl {
-        base: TplContext::from_session("index", session, ctx).await,
+        base: TplContext::from_session("index", session, ctx, lobby_config, Some("Help".to_string())).await,
     })
 }
 

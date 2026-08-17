@@ -11,7 +11,7 @@ use rocket::response::Redirect;
 use rocket::State;
 use rocket::{get, post};
 
-use crate::{Context, TplContext};
+use crate::{Context, TplContext, LobbyConfig};
 
 use crate::views::room_settings::{
     validate_room_form, CreateRoomForm, RoomSettingsBuilder, RoomSettingsType,
@@ -32,9 +32,13 @@ pub async fn create_room<'a>(
     session: LoggedInSession,
     index_manager: &State<IndexManager>,
     ctx: &State<Context>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<EditRoom<'a>> {
+    if lobby_config.admin_rooms_only && !session.is_admin() {
+        return Err(anyhow::anyhow!("Room creation is restricted to admins only").into());
+    }
     let current_user_id = session.user_id();
-    let base = TplContext::from_session("create-room", session.0, ctx).await;
+    let base = TplContext::from_session("create-room", session.0, ctx, lobby_config, Some("Create New Room".to_string())).await;
     let index = index_manager.index.read().await;
 
     let form_builder = if let Some(template_id) = from_template {
@@ -67,7 +71,11 @@ pub async fn create_room_submit<'a>(
     index_manager: &State<IndexManager>,
     mut room_form: Form<CreateRoomForm<'a>>,
     session: LoggedInSession,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<Redirect> {
+    if lobby_config.admin_rooms_only && !session.is_admin() {
+        return Err(anyhow::anyhow!("Room creation is restricted to admins only").into());
+    }
     redirect_to.set("/create-room");
 
     validate_room_form(&mut room_form.room)?;
@@ -103,6 +111,7 @@ pub async fn edit_room<'a>(
     room_id: RoomId,
     session: LoggedInSession,
     index_manager: &State<IndexManager>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<EditRoom<'a>> {
     let mut conn = ctx.db_pool.get().await?;
     let room = db::get_room(room_id, &mut conn).await?;
@@ -113,7 +122,7 @@ pub async fn edit_room<'a>(
     }
 
     let index = index_manager.index.read().await;
-    let base = TplContext::from_session("room", session.0, ctx).await;
+    let base = TplContext::from_session("room", session.0, ctx, lobby_config, Some(format!("{} - Edit Room", room.settings.name))).await;
 
     Ok(EditRoom {
         room_settings_form: RoomSettingsBuilder::new_with_room(

@@ -22,8 +22,7 @@ use crate::index_manager::IndexManager;
 use crate::session::{AdminSession, LoggedInSession};
 use crate::utils::{RenamedFile, ZipFile};
 use crate::views::filters;
-use crate::Context;
-use crate::TplContext;
+use crate::{Context, TplContext, LobbyConfig};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "apworld/main.html")]
@@ -39,6 +38,7 @@ async fn list_worlds<'a>(
     index_manager: &'a State<IndexManager>,
     session: Session,
     ctx: &State<Context>,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<WorldsListTpl<'a>> {
     let index = index_manager.index.read().await.clone();
     let manifest = Manifest::from_index_with_default_versions(&index)?;
@@ -47,7 +47,7 @@ async fn list_worlds<'a>(
     apworlds.sort_by_key(|(_, (world, _))| world.display_name.to_lowercase());
 
     Ok(WorldsListTpl {
-        base: TplContext::from_session("apworlds", session, ctx).await,
+        base: TplContext::from_session("apworlds", session, ctx, lobby_config, Some("Apworlds".to_string())).await,
         index,
         apworlds,
     })
