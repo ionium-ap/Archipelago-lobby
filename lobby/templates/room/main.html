@@ -98,8 +98,8 @@
     <form action="javascript:void(0);">
         <input type="text" name="search" placeholder="Search" autocomplete="off"/>
         <input type="checkbox" id="my-yamls"><label for="my-yamls">My files only</label><br>
-        {% if base.is_logged_in %}
         <input type="checkbox" id="broken-yamls"><label for="broken-yamls">Invalid yamls only</label><br>
+        {% if base.is_logged_in %}
         <input type="checkbox" id="keep-discord-names"><label for="keep-discord-names">Always show discord names</label><br>
         {% endif %}
         {% if is_my_room && !is_closed %}
@@ -146,22 +146,25 @@
 {% macro yaml_row(yaml, discord_name) %}
     {% let is_my_yaml = (Some(yaml.owner_id) == base.user_id.as_ref()) %}
     <tr {%+ if is_my_yaml %} data-my-yaml="true" {% endif +%} data-bundle-id="{{ yaml.bundle_id }}" data-yaml-id="{{ yaml.id }}" data-valid-yaml="{{ yaml.validation_status.is_valid() }}">
-        {% if base.is_logged_in %}
-            <td>
-                <span>
-                    {% if room.settings.yaml_validation %}
-                        <span onclick ='return showRowYaml(this)' class="validation-result validation-{{yaml.validation_status.as_str()}}"></span>
-                    {% else %}
-                        <span></span>
-                    {% endif %}
+        <td>
+            <span>
+                {% if room.settings.yaml_validation %}
+                    <span onclick ='return showRowYaml(this)' class="validation-result validation-{{yaml.validation_status.as_str()}}"></span>
+                {% else %}
+                    <span></span>
+                {% endif %}
+                {# The discord name rides in the title attribute, which the show-discord-names
+                   toggle reveals via CSS and the discord-name sort reads, so it stays out of
+                   the markup entirely for logged-out visitors, not merely hidden. #}
+                {% if base.is_logged_in %}
                     <span class="player-name" title="@{{ discord_name }}">{{yaml.player_name}}</span>
-                    {{yaml.features|yaml_features|safe}}
-                    {% match yaml.last_edited_by_name %}{% when Some with (editor) %}<i class="fa fa-pen-to-square yaml-edited-indicator" title="Edited by {{+ editor }}"></i>{% when None %}{% endmatch %}
-                </span>
-            </td>
-        {% else %}
-            <td><span><span class="player-name">{{yaml.player_name}}</span> {{yaml.features|yaml_features|safe}}{% if yaml.last_edited_by_name.is_some() %} <i class="fa fa-pen-to-square yaml-edited-indicator" title="Edited by a helper"></i>{% endif %}</span></td>
-        {% endif %}
+                {% else %}
+                    <span class="player-name">{{yaml.player_name}}</span>
+                {% endif %}
+                {{yaml.features|yaml_features|safe}}
+                {% match yaml.last_edited_by_name %}{% when Some with (editor) %}{% if base.is_logged_in %}<i class="fa fa-pen-to-square yaml-edited-indicator" title="Edited by {{+ editor }}"></i>{% else %}<i class="fa fa-pen-to-square yaml-edited-indicator" title="Edited by a helper"></i>{% endif %}{% when None %}{% endmatch %}
+            </span>
+        </td>
         <td>{{self.get_game_display_name(yaml.game)}}</td>
         <td>
             <a href="/room/{{room.id}}/download/{{yaml.id}}" onclick='return showRowYaml(this)'>View</a>
