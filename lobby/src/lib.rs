@@ -58,6 +58,11 @@ pub struct Context {
     redis_pool: RedisPool,
 }
 
+#[derive(Debug, Clone)]
+pub struct LobbyConfig {
+    admin_rooms_only: bool,
+}
+
 const CSS_VERSION: &str = std::env!("CSS_VERSION");
 const JS_VERSION: &str = std::env!("JS_VERSION");
 
@@ -65,16 +70,24 @@ const JS_VERSION: &str = std::env!("JS_VERSION");
 pub struct TplContext<'a> {
     is_admin: bool,
     is_logged_in: bool,
+    admin_rooms_only: bool,
     cur_module: &'a str,
     user_id: Option<i64>,
     err_msg: Vec<String>,
     warning_msg: Vec<String>,
     css_version: &'a str,
     js_version: &'a str,
+    page_title: String,
 }
 
 impl<'a> TplContext<'a> {
-    pub async fn from_session(module: &'a str, session: Session, ctx: &Context) -> Self {
+    pub async fn from_session(
+        module: &'a str,
+        session: Session,
+        ctx: &Context,
+        lobby_config: &LobbyConfig,
+        page_title: Option<String>,
+    ) -> Self {
         Self {
             cur_module: module,
             is_admin: session.is_admin,
@@ -84,7 +97,17 @@ impl<'a> TplContext<'a> {
             warning_msg: session.retrieve_warnings(ctx).await.unwrap(),
             css_version: CSS_VERSION,
             js_version: JS_VERSION,
+            admin_rooms_only: lobby_config.admin_rooms_only,
+            page_title: page_title.map_or_else(
+                || "Archipelago Lobby".to_string(),
+                |name| format!("Archipelago Lobby - {}", name),
+            ),
         }
+    }
+
+    /// Whether this session may reach the room creation form.
+    pub fn can_create_room(&self) -> bool {
+        !self.admin_rooms_only || self.is_admin
     }
 }
 
@@ -150,6 +173,37 @@ impl Handler for MetricsRoute {
 impl From<MetricsRoute> for Vec<Route> {
     fn from(val: MetricsRoute) -> Self {
         vec![Route::new(Method::Get, "/", val)]
+    }
+}
+
+/// Reads a boolean config option from the environment, falling back to `default`
+/// when it is unset or empty.
+fn env_bool(name: &str, default: bool) -> bool {
+    let value = match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => return default,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("{name} must be valid UTF-8, got a value that is not")
+        }
+        Ok(value) => value,
+    };
+
+    parse_bool(name, &value, default)
+}
+
+/// The value half of [`env_bool`], split out so it is testable without mutating
+/// process-wide environment state.
+fn parse_bool(name: &str, value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => default,
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        other => panic!("{name} must be a boolean (true/false/1/0/yes/no/on/off), got {other:?}"),
+    }
+}
+
+fn get_lobby_config() -> LobbyConfig {
+    LobbyConfig {
+        admin_rooms_only: env_bool("ADMIN_ROOMS_ONLY", false),
     }
 }
 
@@ -243,6 +297,8 @@ pub async fn main() -> crate::error::Result<()> {
         .expect("Failed to create job queue for generation");
     generation_queue.start_reclaim_checker();
 
+    let lobby_config = get_lobby_config();
+
     let options_cache: OptionsCache = std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new()));
 
     let options_gen_queue = OptionsGenQueue::builder("options_gen")
@@ -300,6 +356,7 @@ pub async fn main() -> crate::error::Result<()> {
         .manage(options_gen_queue)
         .manage(options_cache)
         .manage(queue_tokens)
+        .manage(lobby_config)
         .attach(OAuth2::<Discord>::fairing("discord"))
         .attach(OptionsPreloadFairing)
         .launch()
@@ -307,4 +364,34 @@ pub async fn main() -> crate::error::Result<()> {
         .unwrap();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bool;
+
+    #[test]
+    fn parses_the_documented_spellings() {
+        for value in ["true", "TRUE", "True", "1", "yes", "on", " true "] {
+            assert!(parse_bool("TEST", value, false), "{value:?} should be true");
+        }
+        for value in ["false", "FALSE", "0", "no", "off", " false "] {
+            assert!(
+                !parse_bool("TEST", value, true),
+                "{value:?} should be false"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_falls_back_to_the_default() {
+        assert!(parse_bool("TEST", "", true));
+        assert!(!parse_bool("TEST", "  ", false));
+    }
+
+    #[test]
+    #[should_panic(expected = "TEST must be a boolean")]
+    fn an_unrecognized_value_aborts_rather_than_defaulting() {
+        parse_bool("TEST", "ture", false);
+    }
 }

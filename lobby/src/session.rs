@@ -48,6 +48,10 @@ impl LoggedInSession {
         // Since we're taking from a logged in session, user_id can't be None here.
         self.0.user_id.unwrap()
     }
+
+    pub fn is_admin(&self) -> bool {
+        self.0.is_admin
+    }
 }
 
 fn decode_basic_auth(value: &str) -> Option<(String, String)> {

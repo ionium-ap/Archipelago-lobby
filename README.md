@@ -55,13 +55,14 @@ Generate strong random values for each row. `openssl rand -hex 32` or `openssl r
 
 ## Optional
 
-| Variable | Effect when set |
+| Variable | Effect |
 |---|---|
 | `SENTRY_DSN` | Enables Sentry error reporting. |
 | `OTLP_ENDPOINT` | Enables OpenTelemetry / OTLP tracing. |
 | `RUST_LOG` | Log filter, e.g. `info,ap_lobby=debug`. The compose example sets `debug`. |
 | `SKIP_APWORLDS_UPDATE` | If set, skips fetching the apworld index on startup (useful for offline dev). |
 | `PRELOAD_OPTIONS_DEFS` | If set, eagerly preloads option schemas into Redis at startup. |
+| `ADMIN_ROOMS_ONLY` | Restricts room creation to admins. Non-admins lose the "Create new room" links and the `/create-room` handlers reject them; existing rooms and everything else about them are unaffected. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`, case-insensitive. Unset or empty means off; **any other value aborts startup**. |
 
 ## Discord OAuth
 

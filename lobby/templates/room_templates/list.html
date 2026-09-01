@@ -26,7 +26,9 @@
                         <a href="/room-templates/{{tpl.id}}/rooms"><i class="fa fa-list"></i>&nbsp;Associated rooms</a>
                     </td>
                     <td>
-                        <a href="/create-room?from_template={{tpl.id}}"><i class="fa fa-plus"></i>&nbsp;Create room</a>
+                        {% if base.can_create_room() %}
+                            <a href="/create-room?from_template={{tpl.id}}"><i class="fa fa-plus"></i>&nbsp;Create room</a>
+                        {% endif %}
                     </td>
                 </tr>
             {% endfor %}

@@ -60,6 +60,7 @@ services:
       ADMIN_TOKEN: changeme
       GENERATION_OUTPUT_DIR: "/builds/gen-output"
       ROCKET_ADDRESS: "0.0.0.0"
+      ADMIN_ROOMS_ONLY: false
     working_dir: /builds/worker/checkout
     command: sh -c "watchexec -w lobby -w Cargo.toml -w Cargo.lock -w Rocket.toml -w apwm -w wq -r cargo run"
     user: "${USER_ID}:${GID}"

@@ -4,7 +4,7 @@ use crate::{
     index_manager::IndexManager,
     jobs::OptionsDef,
     session::Session,
-    Context, TplContext,
+    Context, LobbyConfig, TplContext,
 };
 use anyhow::anyhow;
 use askama::Template;
@@ -317,6 +317,7 @@ async fn options_gen_api<'a>(
     options_cache: &State<OptionsCache>,
     index_manager: &'a State<IndexManager>,
     ctx: &'a State<Context>,
+    lobby_config: &State<LobbyConfig>,
     session: Session,
     redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
@@ -340,6 +341,7 @@ async fn options_gen_api<'a>(
     if !versions.contains(&version.to_string()) {
         Err(anyhow!("Unknown version for this apworld"))?
     }
+    let display_name = apworld.display_name.clone();
     drop(index);
 
     let parsed_version = Version::from_str(&version)?;
@@ -354,7 +356,14 @@ async fn options_gen_api<'a>(
     let default_player_name = get_default_player_name(&session, ctx).await;
 
     Ok(OptionsTpl {
-        base: TplContext::from_session("options", session, ctx).await,
+        base: TplContext::from_session(
+            "options",
+            session,
+            ctx,
+            lobby_config,
+            Some(format!("Options Generator - {}", display_name)),
+        )
+        .await,
         apworlds,
         versions,
         selected_apworld: Some(apworld_name.to_string()),
@@ -385,6 +394,7 @@ async fn options_apworld_versions<'a>(
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
     ctx: &'a State<Context>,
+    lobby_config: &State<LobbyConfig>,
     session: Session,
     redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
@@ -409,6 +419,7 @@ async fn options_apworld_versions<'a>(
         options_cache,
         index_manager,
         ctx,
+        lobby_config,
         session,
         redirect_to,
     )
@@ -421,6 +432,7 @@ async fn options_gen<'a>(
     index_manager: &State<IndexManager>,
     ctx: &'a State<Context>,
     session: Session,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<OptionsTpl<'a>> {
     let index = index_manager.index.read().await;
     let mut apworlds: Vec<(String, String)> = index
@@ -433,7 +445,14 @@ async fn options_gen<'a>(
     let default_player_name = get_default_player_name(&session, ctx).await;
 
     Ok(OptionsTpl {
-        base: TplContext::from_session("options", session, ctx).await,
+        base: TplContext::from_session(
+            "options",
+            session,
+            ctx,
+            lobby_config,
+            Some("Options Generator".to_string()),
+        )
+        .await,
         apworlds,
         versions: vec![],
         selected_apworld: None,
@@ -538,6 +557,7 @@ async fn edit_yaml<'a>(
     ctx: &'a State<Context>,
     redirect_to: &RedirectTo,
     session: Session,
+    lobby_config: &State<LobbyConfig>,
 ) -> Result<OptionsTpl<'a>> {
     redirect_to.set("/options");
 
@@ -570,13 +590,13 @@ async fn edit_yaml<'a>(
     };
 
     let index = index_manager.index.read().await;
-    let (apworld_name, latest_version) = index
+    let (apworld_name, latest_version, display_name) = index
         .worlds
         .iter()
         .find(|(_, world)| world.name == game_name)
         .map(|(name, world)| {
             let latest = world.versions.keys().max().unwrap().clone();
-            (name.clone(), latest)
+            (name.clone(), latest, world.display_name.clone())
         })
         .ok_or_else(|| anyhow!("Game '{}' not found", game_name))?;
 
@@ -674,7 +694,14 @@ async fn edit_yaml<'a>(
     };
 
     Ok(OptionsTpl {
-        base: TplContext::from_session("options", session, ctx).await,
+        base: TplContext::from_session(
+            "options",
+            session,
+            ctx,
+            lobby_config,
+            Some(format!("Options Generator - {}", display_name)),
+        )
+        .await,
         apworlds,
         versions,
         selected_apworld: Some(apworld_name),
