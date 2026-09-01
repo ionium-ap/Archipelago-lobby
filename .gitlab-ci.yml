@@ -14,14 +14,14 @@
 # This mirrors the build-result convention the Dockerfiles already expect from
 # the legacy Taskcluster setup, so the Dockerfiles don't need to change.
 #
-# The ap-worker image is multi-stage and self-contained — no separate cargo
-# stage needed.
+# The ap-worker image is multi-stage and self-contained, so it needs no
+# separate cargo stage.
 #
 # Images are built on every branch and always pushed as :sha-<short sha>. The
 # moving tags are branch-gated: main pushes :latest, ionium-dev pushes :dev,
 # and every other branch pushes no moving tag at all.
 #
-# Every job's `changes:` filter includes .gitlab-ci.yml -- the build recipe
+# Every job's `changes:` filter includes .gitlab-ci.yml, the build recipe
 # itself. Otherwise a fix to this file can only be deployed via a manual
 # web-triggered run.
 
@@ -104,7 +104,7 @@ stages:
         *)           MOVING_TAG= ;;
       esac
       echo "branch=$CI_COMMIT_BRANCH moving tag=${MOVING_TAG:-<none>}"
-      # push_image <image> -- pushes :sha-<short sha> plus the branch's moving tag.
+      # push_image <image>: pushes :sha-<short sha> plus the branch's moving tag.
       # Tagged after the build so both names are guaranteed to be the same image.
       push_image() {
         buildah push "$1:sha-$CI_COMMIT_SHORT_SHA"
