@@ -26,6 +26,7 @@ from Options import (
     Toggle,
     Visibility,
 )
+from Utils import __version__ as ap_version
 
 
 # TODO: Dedupe with self_check
@@ -144,7 +145,7 @@ def get_valid_keys(option, world):
 
 class OptionsGenQueue(LobbyQueue):
     def __init__(self, ap_handler, root_url, worker_name, token, loop):
-        super().__init__(root_url, "options_gen", worker_name, token, loop)
+        super().__init__(root_url, "options_gen", worker_name, token, loop, ap_version)
         self.ap_handler = ap_handler
 
     def handle_job(self, job):

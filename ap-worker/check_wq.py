@@ -9,6 +9,8 @@ from wq import LobbyQueue, JobStatus
 import handler  # noqa: E402
 import checker  # noqa: E402
 
+from Utils import __version__ as ap_version  # noqa: E402
+
 
 async def main(loop):
     try:
@@ -35,7 +37,7 @@ async def main(loop):
 
 class YamlCheckerQueue(LobbyQueue):
     def __init__(self, ap_handler, root_url, worker_name, token, loop):
-        super().__init__(root_url, "yaml_validation", worker_name, token, loop)
+        super().__init__(root_url, "yaml_validation", worker_name, token, loop, ap_version)
         self.ap_handler = ap_handler
         self.ap_checker = checker.YamlChecker(ap_handler)
 
