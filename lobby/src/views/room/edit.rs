@@ -46,20 +46,29 @@ pub async fn create_room<'a>(
         Some("Create New Room".to_string()),
     )
     .await;
-    let index = index_manager.index.read().await;
+    let template = match from_template {
+        Some(template_id) => {
+            let mut conn = ctx.db_pool.get().await?;
+            let template = db::get_room_template_by_id(template_id, &mut conn)
+                .await
+                .context("Couldn't get the specified template")?;
+            (template.global || template.settings.author_id == current_user_id).then_some(template)
+        }
+        None => None,
+    };
 
-    let form_builder = if let Some(template_id) = from_template {
-        let mut conn = ctx.db_pool.get().await?;
-        let template = db::get_room_template_by_id(template_id, &mut conn)
-            .await
-            .context("Couldn't get the specified template")?;
-        if !template.global && template.settings.author_id != current_user_id {
-            RoomSettingsBuilder::new(base.clone(), &index, RoomSettingsType::Room)?
-        } else {
+    // The room is made on the template's Archipelago version if it names one, and the form
+    // shows the worlds of that version.
+    let ap_version = index_manager
+        .base_or_default(template.as_ref().and_then(|tpl| tpl.ap_version.as_deref()))
+        .await;
+    let index = index_manager.index_for(&ap_version).await?;
+
+    let form_builder = match template {
+        Some(template) => {
             RoomSettingsBuilder::room_from_template(base.clone(), index.clone(), template)?
         }
-    } else {
-        RoomSettingsBuilder::new(base.clone(), &index, RoomSettingsType::Room)?
+        None => RoomSettingsBuilder::new(base.clone(), &index, RoomSettingsType::Room)?,
     };
 
     Ok(EditRoom {
@@ -86,17 +95,9 @@ pub async fn create_room_submit<'a>(
     redirect_to.set("/create-room");
 
     validate_room_form(&mut room_form.room)?;
-    let new_room = {
-        let index = index_manager.index.read().await;
-        room_form.room.to_new_room(
-            RoomId::new_v4(),
-            &index,
-            Some(session.user_id()),
-            Some(from_template),
-        )?
-    };
 
     let mut conn = ctx.db_pool.get().await?;
+    let mut template_version = None;
     if let Some(template_id) = from_template {
         let tpl = db::get_room_template_by_id(template_id, &mut conn)
             .await
@@ -104,7 +105,23 @@ pub async fn create_room_submit<'a>(
         if !tpl.global && tpl.settings.author_id != session.user_id() {
             Err(anyhow::anyhow!("The given template couldn't be found"))?
         }
+        template_version = tpl.ap_version;
     }
+
+    // The same choice of Archipelago version as the form this answers was built with
+    let ap_version = index_manager
+        .base_or_default(template_version.as_deref())
+        .await;
+    let new_room = {
+        let index = index_manager.index_for(&ap_version).await?;
+        room_form.room.to_new_room(
+            RoomId::new_v4(),
+            &index,
+            ap_version.into(),
+            Some(session.user_id()),
+            Some(from_template),
+        )?
+    };
 
     let new_room = db::create_room(&new_room, &mut conn).await?;
 
@@ -128,7 +145,7 @@ pub async fn edit_room<'a>(
         return Err(anyhow::anyhow!("You're not allowed to edit this room").into());
     }
 
-    let index = index_manager.index.read().await;
+    let index = index_manager.index_for(&room.ap_version).await?;
     let base = TplContext::from_session(
         "room",
         session.0,
@@ -199,10 +216,14 @@ pub async fn edit_room_submit<'a>(
     validate_room_form(&mut room_form.room)?;
 
     let (old_resolved, new_room) = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         let old_resolved = room.settings.manifest.resolve_with(&index).0;
         // author_id and from_template_id are None to skip updating those fields.
-        let new_room = room_form.room.to_new_room(room_id, &index, None, None)?;
+        // The room stays on the Archipelago version it is on.
+        let new_room =
+            room_form
+                .room
+                .to_new_room(room_id, &index, room.ap_version.clone(), None, None)?;
         (old_resolved, new_room)
     };
 

@@ -6,7 +6,7 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use crate::error::Result;
 use crate::schema::rooms;
 use crate::{
-    db::{Json, Paginate, Room, RoomTemplate, RoomTemplateId},
+    db::{ApVersion, Json, Paginate, Room, RoomTemplate, RoomTemplateId},
     schema::room_templates,
 };
 
@@ -31,6 +31,8 @@ pub struct NewRoomTemplate<'a> {
     pub meta_file: String,
     pub is_bundle_room: bool,
     pub locked: bool,
+    /// `None` leaves the column as it is on an update, and NULL on an insert
+    pub ap_version: Option<ApVersion>,
 }
 
 #[tracing::instrument(skip(conn))]

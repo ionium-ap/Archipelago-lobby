@@ -39,7 +39,7 @@ pub async fn room_worlds<'a>(
     let room = db::get_room(room_id, &mut conn).await?;
     let is_my_room = session.is_admin || session.user_id == Some(room.settings.author_id);
 
-    let index = index_manager.index.read().await.clone();
+    let index = index_manager.index_for(&room.ap_version).await?.clone();
     let (apworlds, resolve_errors) = room.settings.manifest.resolve_with(&index);
     if !resolve_errors.is_empty() {
         Err(anyhow::anyhow!(
@@ -81,7 +81,7 @@ pub async fn room_download_all_worlds<'a>(
     let room = db::get_room(room_id, &mut conn).await?;
 
     Ok(index_manager
-        .download_apworlds(&room.settings.manifest)
+        .download_apworlds(&room.ap_version, &room.settings.manifest)
         .await?)
 }
 

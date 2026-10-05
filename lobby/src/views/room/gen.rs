@@ -180,7 +180,7 @@ async fn gen_room_start(
         }
     }
 
-    let index = index_manager.index.read().await.clone();
+    let index = index_manager.index_for(&room.ap_version).await?.clone();
     enqueue_gen_job(&room, yamls, gen_queue, &index, &mut conn).await?;
 
     Ok(Redirect::to(rocket::uri!(gen_room(room_id))))
@@ -428,6 +428,7 @@ async fn enqueue_gen_job(
         meta_file: room.settings.meta_file.clone(),
         room_id: room.id,
         otlp_context: HashMap::new(),
+        ap_version: Some(room.ap_version.0.clone()),
     };
 
     let cx = tracing::Span::current().context();
@@ -436,7 +437,8 @@ async fn enqueue_gen_job(
     });
 
     let job_id = gen_queue
-        .enqueue_job(
+        .enqueue_job_in(
+            Some(&room.ap_version.to_string()),
             &params,
             wq::Priority::Normal,
             Duration::from_secs(60 * 60 * 6),

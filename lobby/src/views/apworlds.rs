@@ -16,6 +16,7 @@ use rocket::http::Header;
 use rocket::routes;
 use rocket::State;
 use semver::Version;
+use std::collections::BTreeMap;
 
 use crate::error::Result;
 use crate::index_manager::IndexManager;
@@ -40,7 +41,7 @@ async fn list_worlds<'a>(
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<WorldsListTpl<'a>> {
-    let index = index_manager.index.read().await.clone();
+    let index = index_manager.default_index().await.clone();
     let manifest = Manifest::from_index_with_default_versions(&index)?;
     let (apworlds, _) = manifest.resolve_with(&index);
     let mut apworlds = Vec::from_iter(apworlds);
@@ -66,9 +67,12 @@ async fn download_all(
     index_manager: &State<IndexManager>,
     _session: LoggedInSession,
 ) -> Result<ZipFile<'_>> {
-    let index = index_manager.index.read().await.clone();
-    let manifest = Manifest::from_index_with_default_versions(&index)?;
-    Ok(index_manager.download_apworlds(&manifest).await?)
+    let base = index_manager.default_base().await;
+    let manifest = {
+        let index = index_manager.index_for(&base).await?;
+        Manifest::from_index_with_default_versions(&index)?
+    };
+    Ok(index_manager.download_apworlds(&base, &manifest).await?)
 }
 
 #[rocket::get("/worlds/download/<world_name>/<version>")]
@@ -79,7 +83,9 @@ async fn download_world<'a>(
     world_name: &str,
     _session: LoggedInSession,
 ) -> Result<RenamedFile<'a>> {
-    let index = index_manager.index.read().await;
+    // A release is one file whichever Archipelago version it is for, so any release that any
+    // of them has can be downloaded here.
+    let index = index_manager.all_releases().await;
 
     let world = index
         .worlds
@@ -118,7 +124,7 @@ async fn refresh_worlds(
     ctx: &State<Context>,
     _session: AdminSession,
 ) -> Result<()> {
-    let old_index = index_manager.index.read().await.clone();
+    let old_index = index_manager.snapshot().await;
     index_manager.update().await?;
 
     let mut conn = ctx.db_pool.get().await?;
@@ -131,7 +137,21 @@ async fn refresh_worlds(
     .await?;
 
     for room in &open_rooms {
-        let (old_resolved, _) = room.settings.manifest.resolve_with(&old_index);
+        if index_manager.index_for(&room.ap_version).await.is_err() {
+            tracing::warn!(
+                room_id = %room.id,
+                "The index no longer describes Archipelago {}, leaving the room's YAMLs as they are",
+                room.ap_version
+            );
+            continue;
+        }
+
+        // What changed for a room is what changed in the view of its Archipelago version. A
+        // version the index didn't describe before had nothing, so everything is new to it.
+        let old_resolved = match old_index.get(&room.ap_version) {
+            Some(old_view) => room.settings.manifest.resolve_with(old_view).0,
+            None => BTreeMap::new(),
+        };
         revalidate_yamls_if_necessary(
             room,
             &old_resolved,

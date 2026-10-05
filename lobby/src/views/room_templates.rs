@@ -84,7 +84,7 @@ async fn create_template<'a>(
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<EditRoomTemplateTpl<'a>> {
-    let index = index_manager.index.read().await;
+    let index = index_manager.default_index().await;
 
     let base = TplContext::from_session(
         "room-templates",
@@ -118,7 +118,7 @@ async fn create_tpl_submit<'a>(
 
     validate_tpl_form(&mut tpl_form)?;
     let room_manifest = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.default_index().await;
         manifest_from_form(&tpl_form.room.me, &index)
     }?;
 
@@ -150,6 +150,8 @@ async fn create_tpl_submit<'a>(
         meta_file: tpl_form.room.meta_file.clone(),
         is_bundle_room: tpl_form.room.is_bundle_room,
         locked: tpl_form.room.locked,
+        // A new template names no Archipelago version: its rooms get the default one
+        ap_version: None,
     };
 
     let mut conn = ctx.db_pool.get().await?;
@@ -174,7 +176,11 @@ async fn edit_template<'a>(
         Err(anyhow!("You are not allowed to edit this template"))?;
     }
 
-    let index = index_manager.index.read().await;
+    // A template's manifest is about the worlds of the Archipelago version its rooms get
+    let ap_version = index_manager
+        .base_or_default(template.ap_version.as_deref())
+        .await;
+    let index = index_manager.index_for(&ap_version).await?;
 
     let base = TplContext::from_session(
         "template",
@@ -218,7 +224,10 @@ async fn edit_tpl_submit<'a>(
     validate_tpl_form(&mut tpl_form)?;
 
     let room_manifest = {
-        let index = index_manager.index.read().await;
+        let ap_version = index_manager
+            .base_or_default(tpl.ap_version.as_deref())
+            .await;
+        let index = index_manager.index_for(&ap_version).await?;
         manifest_from_form(&tpl_form.room.me, &index)
     }?;
 
@@ -248,6 +257,7 @@ async fn edit_tpl_submit<'a>(
         meta_file: tpl_form.room.meta_file.clone(),
         is_bundle_room: tpl_form.room.is_bundle_room,
         locked: tpl_form.room.locked,
+        ap_version: None, // (Skips updating that field)
     };
 
     db::update_room_template(&new_tpl, &mut conn).await?;

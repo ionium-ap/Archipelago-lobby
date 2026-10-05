@@ -96,7 +96,9 @@ Several lobby processes can serve the same deployment, with one caveat about the
 
 The workers (`yaml-checker`, `generator`, `option-generator`) run Archipelago itself, and a worker image is built for exactly one Archipelago version, called its base. Every request a worker makes to the lobby's queues names the base it runs, and the lobby only hands a worker the jobs of that base.
 
-For now every job is for one base, the `archipelago_version` of the index. A worker built for any other base connects, waits, and is never given a job. A worker that names no base, as the ones built before this did, is treated as running the index's version.
+A room is on one base, kept in `rooms.ap_version`. Everything about the room follows from it: the worlds and releases it can use are the ones the index gives that base, its YAMLs are validated by a worker of that base, and so is its generation. A job carries its base as `ap_version`, and a worker refuses a job that names another base than its own.
+
+For now every room is on the `archipelago_version` of the index: rooms that existed before the column did were put on 0.6.7, new rooms get the index's version, and nothing in the interface changes a room's base yet. So a worker built for any other base connects, waits, and is never given a job. The options pages and the game API use the index's version as well. A worker that names no base, as the ones built before this did, is treated as running the index's version.
 
 Each queue keeps its waiting jobs in one list per base. The index's version uses the keys the queue always had (`wq:<queue>:queue`), so jobs that are waiting or running across an upgrade or a rollback are not lost; any other base uses `wq:<queue>:partition:<base>:queue`.
 

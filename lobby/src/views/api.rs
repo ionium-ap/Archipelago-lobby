@@ -419,7 +419,7 @@ pub(crate) async fn list_games(
     _session: AdminSession,
     index_manager: &State<IndexManager>,
 ) -> Json<Vec<GameInfo>> {
-    let index = index_manager.index.read().await;
+    let index = index_manager.default_index().await;
     let mut games: Vec<GameInfo> = index
         .worlds
         .iter()
@@ -450,8 +450,9 @@ pub(crate) async fn game_options(
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
 ) -> ApiResult<Json<Vec<OptionInfo>>> {
+    let base = index_manager.default_base().await;
     let version = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&base).await?;
         let world = index.worlds.get(apworld).ok_or_else(|| ApiError {
             error: anyhow!("Unknown apworld"),
             status: Status::NotFound,
@@ -467,10 +468,15 @@ pub(crate) async fn game_options(
             })?
     };
 
-    let options =
-        super::options_gen::get_options_def(apworld, &version, options_gen_queue, options_cache)
-            .await
-            .status(Status::InternalServerError)?;
+    let options = super::options_gen::get_options_def(
+        apworld,
+        &version,
+        &base,
+        options_gen_queue,
+        options_cache,
+    )
+    .await
+    .status(Status::InternalServerError)?;
 
     let result: Vec<OptionInfo> = options
         .iter()
@@ -663,6 +669,7 @@ pub(crate) async fn edit_yaml(
         let validation_result = crate::yaml::validate_yaml(
             document,
             parsed,
+            &room.ap_version,
             &room.settings.manifest,
             index_manager,
             yaml_validation_queue,
@@ -693,7 +700,7 @@ pub(crate) async fn edit_yaml(
             }
         };
 
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         let features = crate::extractor::extract_features(&index, parsed, document)?;
 
         db::update_yaml_edited_content(
@@ -712,7 +719,7 @@ pub(crate) async fn edit_yaml(
         )
         .await?;
     } else {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         let features = crate::extractor::extract_features(&index, parsed, document)?;
 
         db::update_yaml_edited_content(

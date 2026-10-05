@@ -26,12 +26,19 @@ use crate::{
     generation::{get_generation_info, get_slots},
 };
 
+// Every job says which Archipelago version it is for, in `ap_version`. It is enqueued in that
+// version's partition of its queue, so only a worker running that version is given it, and the
+// worker checks the field against its own version before doing anything. The field is only
+// missing from a job that was enqueued before jobs had one.
+
 #[derive(Serialize, Deserialize)]
 pub struct YamlValidationParams {
     pub apworlds: Vec<(String, Version)>,
     pub yaml: String,
     pub otlp_context: HashMap<String, String>,
     pub yaml_id: Option<YamlId>,
+    #[serde(default)]
+    pub ap_version: Option<Version>,
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub struct YamlValidationResponse {
@@ -46,6 +53,8 @@ pub struct GenerationParams {
     pub room_id: RoomId,
     pub meta_file: String,
     pub otlp_context: HashMap<String, String>,
+    #[serde(default)]
+    pub ap_version: Option<Version>,
 }
 
 pub type GenerationQueue = WorkQueue<GenerationParams, ()>;
@@ -55,6 +64,8 @@ pub struct GenerationOutDir(pub PathBuf);
 pub struct OptionsGenParams {
     pub apworld: (String, Version),
     pub otlp_context: HashMap<String, String>,
+    #[serde(default)]
+    pub ap_version: Option<Version>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -266,6 +277,20 @@ pub fn get_yaml_validation_callback(
                     return Ok(true);
                 }
 
+                // A result from another Archipelago version than the room is on now says
+                // nothing about the YAML in this room.
+                if let Some(job_version) = &desc.params.ap_version {
+                    let room_version = db::get_ap_version_for_yaml(yaml_id, &mut conn)
+                        .await
+                        .map_err(|e| e.0)?;
+                    if &*room_version != job_version {
+                        info!(
+                            "Received a job for Archipelago {job_version} but the room is on {room_version}, ignoring it"
+                        );
+                        return Ok(true);
+                    }
+                }
+
                 let (status, error) = match result.status {
                     wq::JobStatus::Success => (YamlValidationStatus::Validated, None),
                     wq::JobStatus::Failure => (
@@ -409,4 +434,47 @@ pub fn get_yamls_patches_association(
     }
 
     Ok(association)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use semver::Version;
+
+    use super::{GenerationParams, OptionsGenParams, YamlValidationParams};
+
+    // Jobs enqueued by a lobby from before jobs named a version are still in the queues when
+    // this one starts, and it has to read them to hand them out and to resolve them.
+    #[test]
+    fn test_jobs_without_a_version_still_parse() {
+        let yaml: YamlValidationParams = serde_json::from_str(
+            r#"{"apworlds": [["apquest", "0.6.7"]], "yaml": "", "otlp_context": {}, "yaml_id": null}"#,
+        )
+        .unwrap();
+        assert_eq!(yaml.ap_version, None);
+
+        let generation: GenerationParams = serde_json::from_str(
+            r#"{"apworlds": [], "room_id": "00000000-0000-0000-0000-000000000000", "meta_file": "", "otlp_context": {}}"#,
+        )
+        .unwrap();
+        assert_eq!(generation.ap_version, None);
+
+        let options: OptionsGenParams =
+            serde_json::from_str(r#"{"apworld": ["apquest", "0.6.7"], "otlp_context": {}}"#)
+                .unwrap();
+        assert_eq!(options.ap_version, None);
+    }
+
+    // The worker compares the field with its `Utils.__version__`, as text
+    #[test]
+    fn test_version_is_sent_as_the_text_a_worker_compares() {
+        let params = OptionsGenParams {
+            apworld: ("apquest".to_string(), Version::new(0, 6, 8)),
+            otlp_context: HashMap::new(),
+            ap_version: Some(Version::new(0, 6, 8)),
+        };
+        let sent = serde_json::to_value(&params).unwrap();
+        assert_eq!(sent["ap_version"], "0.6.8");
+    }
 }

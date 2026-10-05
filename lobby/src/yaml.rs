@@ -135,6 +135,7 @@ pub async fn parse_and_validate_yamls_for_room<'a>(
                 let validation_result = validate_yaml(
                     document,
                     parsed,
+                    &room.ap_version,
                     &room.settings.manifest,
                     index_manager,
                     yaml_validation_queue,
@@ -167,7 +168,7 @@ pub async fn parse_and_validate_yamls_for_room<'a>(
                 (vec![], YamlValidationStatus::Unknown, None, vec![])
             };
 
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         let features = crate::extractor::extract_features(&index, parsed, document)?;
         let (disabled_games, unsupported_games): (Vec<_>, Vec<_>) = unsupported_games
             .into_iter()
@@ -276,23 +277,28 @@ pub enum YamlValidationJobResult {
 }
 
 #[tracing::instrument(skip_all)]
+/// Validates a YAML for a room on Archipelago `ap_version`: with the releases that the room's
+/// manifest gives on that version, by a worker running that version.
 pub(crate) async fn validate_yaml(
     yaml: &str,
     parsed: &YamlFile,
+    ap_version: &Version,
     manifest: &Manifest,
     index_manager: &IndexManager,
     yaml_validation_queue: &YamlValidationQueue,
 ) -> Result<YamlValidationJobResult> {
-    let apworlds = match get_apworlds_for_games(index_manager, manifest, &parsed.game).await {
-        Ok(apworlds) => apworlds,
-        Err(unsupported) => return Ok(YamlValidationJobResult::Unsupported(unsupported)),
-    };
+    let apworlds =
+        match get_apworlds_for_games(index_manager, ap_version, manifest, &parsed.game).await {
+            Ok(apworlds) => apworlds,
+            Err(unsupported) => return Ok(YamlValidationJobResult::Unsupported(unsupported)),
+        };
 
     let mut params = YamlValidationParams {
         apworlds,
         yaml: yaml.to_string(),
         otlp_context: HashMap::new(),
         yaml_id: None,
+        ap_version: Some(ap_version.clone()),
     };
 
     let cx = tracing::Span::current().context();
@@ -301,7 +307,12 @@ pub(crate) async fn validate_yaml(
     });
 
     let job_id = yaml_validation_queue
-        .enqueue_job(&params, wq::Priority::Normal, Duration::from_secs(30))
+        .enqueue_job_in(
+            Some(&ap_version.to_string()),
+            &params,
+            wq::Priority::Normal,
+            Duration::from_secs(30),
+        )
         .await?;
 
     let Some(status) = yaml_validation_queue
@@ -401,13 +412,14 @@ fn is_reserved_name(player_name: &str) -> bool {
 #[tracing::instrument(skip(index_manager, manifest))]
 pub async fn get_apworlds_for_games(
     index_manager: &IndexManager,
+    base: &Version,
     manifest: &Manifest,
     games: &YamlGame,
 ) -> std::result::Result<Vec<(String, Version)>, Vec<String>> {
     match games {
         YamlGame::Name(name) => {
             let Some(apworld_path) = index_manager
-                .get_apworld_from_game_name(manifest, name)
+                .get_apworld_from_game_name(base, manifest, name)
                 .await
             else {
                 return Err(vec![name.to_string()]);
@@ -419,7 +431,7 @@ pub async fn get_apworlds_for_games(
             let mut errors = Vec::new();
             for (game, _) in map.iter().filter(|(_, probability)| **probability != 0.) {
                 let resolved_game = index_manager
-                    .get_apworld_from_game_name(manifest, game)
+                    .get_apworld_from_game_name(base, manifest, game)
                     .await;
 
                 match resolved_game {
@@ -451,7 +463,7 @@ pub async fn revalidate_yamls_if_necessary(
     let yamls = db::get_yamls_for_room(room.id, conn).await?;
 
     let (resolved_index, _) = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         room.settings.manifest.resolve_with(&index)
     };
 
@@ -541,29 +553,35 @@ pub async fn queue_yaml_validation(
         return Ok(());
     };
 
-    let apworlds =
-        match get_apworlds_for_games(index_manager, &room.settings.manifest, &parsed.game).await {
-            Ok(apworlds) => apworlds,
-            Err(unsupported) => {
-                // If the apworld was already unsupported, nothing has changed
-                if yaml.validation_status == YamlValidationStatus::Unsupported {
-                    return Ok(());
-                }
-
-                let error = format!("Unsupported apworlds: {}", unsupported.join(", "));
-
-                db::update_yaml_status(
-                    yaml.id,
-                    db::YamlValidationStatus::Unsupported,
-                    Some(error),
-                    vec![],
-                    Utc::now(),
-                    conn,
-                )
-                .await?;
+    let apworlds = match get_apworlds_for_games(
+        index_manager,
+        &room.ap_version,
+        &room.settings.manifest,
+        &parsed.game,
+    )
+    .await
+    {
+        Ok(apworlds) => apworlds,
+        Err(unsupported) => {
+            // If the apworld was already unsupported, nothing has changed
+            if yaml.validation_status == YamlValidationStatus::Unsupported {
                 return Ok(());
             }
-        };
+
+            let error = format!("Unsupported apworlds: {}", unsupported.join(", "));
+
+            db::update_yaml_status(
+                yaml.id,
+                db::YamlValidationStatus::Unsupported,
+                Some(error),
+                vec![],
+                Utc::now(),
+                conn,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
 
     db::reset_yaml_validation_status(yaml.id, conn).await?;
 
@@ -572,6 +590,7 @@ pub async fn queue_yaml_validation(
         yaml: current.to_string(),
         otlp_context: HashMap::new(),
         yaml_id: Some(yaml.id),
+        ap_version: Some(room.ap_version.0.clone()),
     };
 
     let cx = tracing::Span::current().context();
@@ -580,7 +599,12 @@ pub async fn queue_yaml_validation(
     });
 
     yaml_validation_queue
-        .enqueue_job(&params, wq::Priority::Low, Duration::from_secs(600))
+        .enqueue_job_in(
+            Some(&room.ap_version.to_string()),
+            &params,
+            wq::Priority::Low,
+            Duration::from_secs(600),
+        )
         .await?;
 
     Ok(())

@@ -1,7 +1,9 @@
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::db::{self, NewRoom, Room, RoomId, RoomSettings, RoomTemplate, RoomTemplateId};
+use crate::db::{
+    self, ApVersion, NewRoom, Room, RoomId, RoomSettings, RoomTemplate, RoomTemplateId,
+};
 use crate::error::Result;
 use anyhow::anyhow;
 use apwm::{Index, Manifest};
@@ -47,6 +49,7 @@ impl<'a> RoomSettingsForm<'a> {
         &self,
         id: RoomId,
         index: &Index,
+        ap_version: ApVersion,
         author_id: Option<i64>,
         from_template_id: Option<Option<RoomTemplateId>>,
     ) -> Result<NewRoom<'a>> {
@@ -74,6 +77,7 @@ impl<'a> RoomSettingsForm<'a> {
             meta_file: self.meta_file.clone(),
             is_bundle_room: self.is_bundle_room,
             locked: self.locked,
+            ap_version,
         })
     }
 }

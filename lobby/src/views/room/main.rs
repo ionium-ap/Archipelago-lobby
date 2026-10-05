@@ -76,7 +76,7 @@ pub async fn room<'a>(
     let mut yamls = db::get_yamls_for_room_with_author_names(room_id, &mut conn).await?;
 
     let game_display_names = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         yamls
             .iter()
             .map(|(yaml, _)| &yaml.game)

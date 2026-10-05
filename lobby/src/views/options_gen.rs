@@ -274,10 +274,14 @@ impl OptionsTpl<'_> {
 }
 
 /// Helper to fetch OptionsDef, using cache if available or queuing a job if not.
+///
+/// `base` is the Archipelago version whose worker generates them. The cache doesn't tell
+/// bases apart yet, so a cached definition is returned whichever base generated it.
 #[tracing::instrument(skip(options_gen_queue, options_cache))]
 pub(crate) async fn get_options_def(
     apworld_name: &str,
     version: &Version,
+    base: &Version,
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
 ) -> Result<OptionsDef> {
@@ -288,6 +292,7 @@ pub(crate) async fn get_options_def(
     let mut params = OptionsGenParams {
         apworld: (apworld_name.to_string(), version.clone()),
         otlp_context: HashMap::new(),
+        ap_version: Some(base.clone()),
     };
 
     let cx = tracing::Span::current().context();
@@ -296,7 +301,12 @@ pub(crate) async fn get_options_def(
     });
 
     let job_id = options_gen_queue
-        .enqueue_job(&params, wq::Priority::High, Duration::from_secs(30))
+        .enqueue_job_in(
+            Some(&base.to_string()),
+            &params,
+            wq::Priority::High,
+            Duration::from_secs(30),
+        )
         .await?;
 
     let Some(status) = options_gen_queue
@@ -348,8 +358,9 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
         let options_gen_queue = rocket.state::<OptionsGenQueue>().unwrap();
         let options_cache = rocket.state::<OptionsCache>().unwrap();
 
+        let base = index_manager.default_base().await;
         let worlds: Vec<_> = {
-            let index = index_manager.index.read().await;
+            let index = index_manager.default_index().await;
             index
                 .worlds
                 .iter()
@@ -374,6 +385,7 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
             let mut params = OptionsGenParams {
                 apworld: (apworld_name.clone(), version.clone()),
                 otlp_context: HashMap::new(),
+                ap_version: Some(base.clone()),
             };
 
             let cx = tracing::Span::current().context();
@@ -382,7 +394,12 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
             });
 
             if let Err(e) = options_gen_queue
-                .enqueue_job(&params, wq::Priority::Low, Duration::from_secs(120))
+                .enqueue_job_in(
+                    Some(&base.to_string()),
+                    &params,
+                    wq::Priority::Low,
+                    Duration::from_secs(120),
+                )
                 .await
             {
                 tracing::warn!(%apworld_name, %version, %e, "Failed to enqueue preload job");
@@ -412,7 +429,8 @@ async fn options_gen_api<'a>(
     redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
     redirect_to.set("/options");
-    let index = index_manager.index.read().await;
+    let base = index_manager.default_base().await;
+    let index = index_manager.index_for(&base).await?;
     let Some(apworld) = index.worlds.get(apworld_name) else {
         Err(anyhow!("Unknown apworld"))?
     };
@@ -438,6 +456,7 @@ async fn options_gen_api<'a>(
     let options = get_options_def(
         apworld_name,
         &parsed_version,
+        &base,
         options_gen_queue,
         options_cache,
     )
@@ -489,7 +508,8 @@ async fn options_apworld_versions<'a>(
     redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
     redirect_to.set("/options");
-    let index = index_manager.index.read().await;
+    let base = index_manager.default_base().await;
+    let index = index_manager.index_for(&base).await?;
     let Some(apworld) = index.worlds.get(apworld_name) else {
         Err(anyhow!("Unknown apworld"))?
     };
@@ -524,7 +544,8 @@ async fn options_gen<'a>(
     session: Session,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<OptionsTpl<'a>> {
-    let index = index_manager.index.read().await;
+    let base = index_manager.default_base().await;
+    let index = index_manager.index_for(&base).await?;
     let mut apworlds: Vec<(String, String)> = index
         .worlds
         .iter()
@@ -679,7 +700,8 @@ async fn edit_yaml<'a>(
         return Err(anyhow!("Invalid 'game' field in YAML").into());
     };
 
-    let index = index_manager.index.read().await;
+    let base = index_manager.default_base().await;
+    let index = index_manager.index_for(&base).await?;
     let (apworld_name, latest_version, display_name) = index
         .worlds
         .iter()
@@ -711,6 +733,7 @@ async fn edit_yaml<'a>(
     let options = get_options_def(
         &apworld_name,
         &latest_version,
+        &base,
         options_gen_queue,
         options_cache,
     )
@@ -826,8 +849,9 @@ async fn download_yaml<'a>(
     };
 
     let parsed_version = Version::from_str(version).map_err(|_| not_found("Invalid version"))?;
+    let base = index_manager.default_base().await;
     let game_name = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&base).await?;
         let Some(apworld) = index.worlds.get(apworld_name) else {
             return Err(not_found("Unknown apworld"));
         };
@@ -840,6 +864,7 @@ async fn download_yaml<'a>(
     let options = get_options_def(
         apworld_name,
         &parsed_version,
+        &base,
         options_gen_queue,
         options_cache,
     )
@@ -969,6 +994,7 @@ mod tests {
     async fn lobby_process(valkey: &ValkeyInstance) -> (OptionsGenQueue, OptionsCache) {
         let cache = OptionsCache::new(redis_pool(valkey));
         let queue = OptionsGenQueue::builder("options_gen")
+            .with_default_partition("0.6.7")
             .with_callback(get_options_gen_callback(cache.clone()))
             .build(&valkey.url())
             .await
@@ -1027,6 +1053,7 @@ mod tests {
         let options = get_options_def(
             "world",
             &Version::new(1, 0, 0),
+            &Version::new(0, 6, 7),
             State::from(&asking_queue),
             State::from(&asking_cache),
         )
@@ -1051,9 +1078,15 @@ mod tests {
 
         assert!(cache.contains("world", &version).await.unwrap());
         // Nothing serves the queue here, so this only returns if the cache answers
-        let options = get_options_def("world", &version, State::from(&queue), State::from(&cache))
-            .await
-            .unwrap();
+        let options = get_options_def(
+            "world",
+            &version,
+            &Version::new(0, 6, 7),
+            State::from(&queue),
+            State::from(&cache),
+        )
+        .await
+        .unwrap();
         assert_eq!(as_json(&options), as_json(&test_options()));
         assert!(cache
             .get("world", &Version::new(2, 0, 0))

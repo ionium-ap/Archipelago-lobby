@@ -145,6 +145,52 @@ impl FromSql<ValidationStatus, Pg> for YamlValidationStatus {
     }
 }
 
+/// The Archipelago version a room runs on, its base. Stored as text.
+#[derive(Debug, Clone, PartialEq, Eq, FromSqlRow, AsExpression, Serialize)]
+#[diesel(sql_type=Text)]
+#[serde(transparent)]
+pub struct ApVersion(pub Version);
+
+impl std::ops::Deref for ApVersion {
+    type Target = Version;
+
+    fn deref(&self) -> &Version {
+        &self.0
+    }
+}
+
+impl From<Version> for ApVersion {
+    fn from(version: Version) -> Self {
+        Self(version)
+    }
+}
+
+impl Display for ApVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl ToSql<Text, Pg> for ApVersion {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut diesel::serialize::Output<'b, '_, Pg>,
+    ) -> diesel::serialize::Result {
+        let value = self.0.to_string();
+        <String as ToSql<Text, Pg>>::to_sql(&value, &mut out.reborrow())
+    }
+}
+
+impl FromSql<Text, Pg> for ApVersion {
+    fn from_sql(
+        bytes: <Pg as diesel::backend::Backend>::RawValue<'_>,
+    ) -> diesel::deserialize::Result<Self> {
+        let value = <String as FromSql<Text, Pg>>::from_sql(bytes)?;
+
+        Ok(ApVersion(value.parse()?))
+    }
+}
+
 impl FromSql<Apworld, Pg> for (String, Version) {
     fn from_sql(
         bytes: <Pg as diesel::backend::Backend>::RawValue<'_>,
