@@ -11,6 +11,11 @@ pub struct Claim {
     pub priority: Priority,
     pub worker_id: String,
     pub time: DateTime<Utc>,
+    /// The partition the job was claimed from, so that an expired claim puts it back where it
+    /// came from. Absent for the default partition, which is also what a claim written before
+    /// partitions existed looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<String>,
 }
 
 impl Claim {
@@ -20,7 +25,13 @@ impl Claim {
             priority,
             worker_id: worker_id.to_string(),
             time: Utc::now(),
+            partition: None,
         }
+    }
+
+    pub fn in_partition(mut self, partition: Option<String>) -> Self {
+        self.partition = partition;
+        self
     }
 
     pub fn refresh(&mut self, worker_id: &str) -> Result<()> {

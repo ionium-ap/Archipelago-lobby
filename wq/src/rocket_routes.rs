@@ -40,6 +40,10 @@ impl From<WorkQueueError> for QueueApiError {
             WorkQueueError::InvalidJobStatus(msg) => {
                 Self(Status::BadRequest, anyhow!("Invalid job status: {}", msg))
             }
+            WorkQueueError::InvalidPartition(partition) => Self(
+                Status::BadRequest,
+                anyhow!("Invalid partition name: {:?}", partition),
+            ),
             e => Self(Status::InternalServerError, e.into()),
         }
     }
@@ -57,15 +61,22 @@ impl<'r> Responder<'r, 'static> for QueueApiError {
 
 pub struct QueueTokens<'a>(pub HashMap<&'a str, String>);
 
+// A worker names its partition in every request. Only the claim acts on it: that is where a
+// worker is given a job, and a job stays with the worker that claimed it. A worker that names
+// none, as the ones from before partitions existed do, gets the default partition.
 #[derive(serde::Deserialize)]
 pub struct ClaimJobForm {
     pub worker_id: String,
+    #[serde(default)]
+    pub partition: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 pub struct ReclaimJobForm {
     pub worker_id: String,
     pub job_id: JobId,
+    #[serde(default)]
+    pub partition: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -74,6 +85,8 @@ pub struct ResolveJobForm<R: Clone> {
     pub job_id: JobId,
     pub status: JobStatus,
     pub result: Option<R>,
+    #[serde(default)]
+    pub partition: Option<String>,
 }
 
 pub type QueueApiResult<T> = std::result::Result<T, QueueApiError>;
@@ -131,11 +144,16 @@ macro_rules! declare_queues {
             }
 
             #[rocket::post("/claim_job", data="<data>")]
-            #[tracing::instrument(skip(auth, queue, data), fields(queue = stringify!($mod_name)))]
+            #[tracing::instrument(skip(auth, queue, data), fields(queue = stringify!($mod_name), partition))]
             async fn claim_job(auth: QueueApiResult<QueueAuth>, queue: &State<WorkQueue<$param_ty, $resp_ty>>, data: Json<ClaimJobForm>) -> QueueApiResult<Json<Option<Job<$param_ty>>>> {
                 auth?;
 
-                Ok(Json(queue.claim_job(&data.worker_id).await.map_err(QueueApiError::from)?))
+                if let Some(partition) = &data.partition {
+                    tracing::Span::current().record("partition", tracing::field::display(partition));
+                    $crate::validate_partition(partition).map_err(QueueApiError::from)?;
+                }
+
+                Ok(Json(queue.claim_job_in(data.partition.as_deref(), &data.worker_id).await.map_err(QueueApiError::from)?))
             }
 
             #[rocket::post("/reclaim_job", data="<data>")]

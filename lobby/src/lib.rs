@@ -278,7 +278,19 @@ pub async fn main() -> crate::error::Result<()> {
         index_manager.update().await?;
     }
 
+    // A worker names the Archipelago version it runs when it asks for a job, and only gets the
+    // jobs of that partition. Every job is for the index's own version for now, which is the
+    // default partition: it keeps the keys the queues always had, so the jobs that are in
+    // flight during an upgrade, and the workers that name no version, carry on as before.
+    let legacy_base = index_manager
+        .index
+        .read()
+        .await
+        .archipelago_version
+        .to_string();
+
     let yaml_validation_queue = YamlValidationQueue::builder("yaml_validation")
+        .with_default_partition(&legacy_base)
         .with_callback(get_yaml_validation_callback(db_pool.clone()))
         .with_reclaim_timeout(Duration::from_secs(10))
         .build(&valkey_url)
@@ -287,6 +299,7 @@ pub async fn main() -> crate::error::Result<()> {
     yaml_validation_queue.start_reclaim_checker();
 
     let generation_queue = GenerationQueue::builder("generation_queue")
+        .with_default_partition(&legacy_base)
         .with_callback(get_generation_callback(
             db_pool.clone(),
             generation_out_dir.0.clone(),
@@ -302,6 +315,7 @@ pub async fn main() -> crate::error::Result<()> {
     let options_cache = OptionsCache::new(redis_pool.clone());
 
     let options_gen_queue = OptionsGenQueue::builder("options_gen")
+        .with_default_partition(&legacy_base)
         .with_callback(get_options_gen_callback(options_cache.clone()))
         .with_reclaim_timeout(Duration::from_secs(10))
         .build(&valkey_url)

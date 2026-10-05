@@ -30,6 +30,8 @@ pub enum WorkQueueError {
     WorkerMismatch,
     #[error("Invalid job status: {0}")]
     InvalidJobStatus(String),
+    #[error("Invalid partition name: {0:?}")]
+    InvalidPartition(String),
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("Pool error: {0}")]
@@ -76,11 +78,79 @@ pub struct Job<P> {
     pub params: P,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobDesc<P> {
     pub params: P,
     pub submitted_at: DateTime<Utc>,
     pub deadline: DateTime<Utc>,
+    /// The partition the job was enqueued in. Absent for the default partition, which is also
+    /// what a job enqueued before partitions existed looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<String>,
+}
+
+/// The one field of a stored `JobDesc` that can be read without knowing the type of its params.
+#[derive(Deserialize)]
+struct JobPartition {
+    #[serde(default)]
+    partition: Option<String>,
+}
+
+const MAX_PARTITION_LEN: usize = 64;
+
+/// How long the status of a resolved job stays readable after the job itself is gone.
+const RESOLVED_TTL_SECS: u64 = 60;
+
+/// A partition's name becomes part of a key, so it is limited to what a version string needs.
+pub fn validate_partition(partition: &str) -> Result<(), WorkQueueError> {
+    let valid = !partition.is_empty()
+        && partition.len() <= MAX_PARTITION_LEN
+        && partition
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+    if !valid {
+        return Err(WorkQueueError::InvalidPartition(partition.to_string()));
+    }
+
+    Ok(())
+}
+
+/// Where the jobs waiting for a worker are. A queue has one sorted set of them per partition,
+/// and a worker only takes jobs from the partition it asks for. Everything else about a job
+/// (its params, its claim, its result) is keyed by job ID alone and isn't partitioned.
+///
+/// The default partition uses the keys the queue had before partitions existed.
+#[derive(Clone)]
+pub(crate) struct PendingKeys {
+    pub(crate) default_key: String,
+    pub(crate) partitions_key: String,
+    pub(crate) partition_prefix: String,
+    pub(crate) default_partition: Option<String>,
+}
+
+impl PendingKeys {
+    /// Turns a partition as a caller names it into the form that is stored: `None` for the
+    /// default partition, whether it was named or not.
+    fn normalize(&self, partition: Option<&str>) -> Result<Option<String>, WorkQueueError> {
+        let Some(partition) = partition else {
+            return Ok(None);
+        };
+        validate_partition(partition)?;
+        if self.default_partition.as_deref() == Some(partition) {
+            return Ok(None);
+        }
+
+        Ok(Some(partition.to_string()))
+    }
+
+    /// The sorted set of a normalized partition's pending jobs. It is also the name of the
+    /// channel that tells waiting workers a job was added to it.
+    fn key(&self, partition: Option<&str>) -> String {
+        match partition {
+            None => self.default_key.clone(),
+            Some(partition) => format!("{}:{}:queue", self.partition_prefix, partition),
+        }
+    }
 }
 
 impl JobStatus {
@@ -189,7 +259,9 @@ pub struct WorkQueue<
     queue_key: String,
     claims_key: String,
     results_key: String,
+    resolved_key: String,
     stats_key: String,
+    pending: PendingKeys,
     pool: Pool,
     redis_client: redis::Client,
     reclaim_timeout: Duration,
@@ -207,7 +279,7 @@ impl<
         pool: Pool,
         reclaim_timeout: Duration,
         claims_key: String,
-        queue_key: String,
+        pending: PendingKeys,
     ) {
         loop {
             tokio::time::sleep(reclaim_timeout / 2).await;
@@ -223,7 +295,7 @@ impl<
             let queue_claims = match conn.hgetall::<_, HashMap<String, Claim>>(&claims_key).await {
                 Ok(claims) => claims,
                 Err(e) => {
-                    tracing::error!("Error while listing claims for queue {}: {}", queue_key, e);
+                    tracing::error!("Error while listing claims at {}: {}", claims_key, e);
                     continue;
                 }
             };
@@ -241,6 +313,7 @@ impl<
                     .unwrap()
                     > reclaim_timeout
                 {
+                    let queue_key = pending.key(claim.partition.as_deref());
                     tracing::warn!(
                         "Claim for job {} by worker {} expired. Reinserting in queue at {}",
                         claim.job_id,
@@ -276,7 +349,7 @@ impl<
             pool,
             self.reclaim_timeout,
             self.claims_key.clone(),
-            self.queue_key.clone(),
+            self.pending.clone(),
         ))
     }
 
@@ -426,8 +499,16 @@ impl<
             status: final_status,
             result: job_result.result,
         };
+        // The status is also kept on its own for a short while. The cleanup below can remove the
+        // result before a `wait_for_job` that just started has subscribed, and this is what
+        // tells it how the job ended.
         redis::pipe()
             .set::<_, JobResult<R>>(&result_key, final_result)
+            .set_ex::<_, u8>(
+                self.get_resolved_key(&job_id),
+                final_status as u8,
+                RESOLVED_TTL_SECS,
+            )
             .incr(self.get_stats_key(final_status.as_stat_name()), 1)
             .publish::<_, u8>(&result_key, final_status as u8)
             .exec_async(&mut *conn)
@@ -476,8 +557,28 @@ impl<
         Ok(None)
     }
 
+    /// The status a job was resolved with, readable for a short while after the job and its
+    /// result have been cleaned up.
+    async fn get_resolved_status(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<JobStatus>, WorkQueueError> {
+        let mut conn = self.pool.get().await?;
+        let status = conn
+            .get::<_, Option<u8>>(self.get_resolved_key(job_id))
+            .await
+            .map_err(WorkQueueError::Redis)?;
+
+        status
+            .map(|status| JobStatus::try_from(status).map_err(WorkQueueError::Other))
+            .transpose()
+    }
+
     /// Wait for a job to complete. If timeout is None, a default timeout of one day will be used.
     /// Returns `Ok(None)` on timeout.
+    ///
+    /// A job that was resolved a moment ago still gives its status here, even if its result is
+    /// already gone: a resolve callback that returns `true` has the result deleted right away.
     pub async fn wait_for_job(
         &self,
         job_id: &JobId,
@@ -488,6 +589,9 @@ impl<
             .await
             .map_err(WorkQueueError::Other)?;
         if job_status.is_none() {
+            if let Some(status) = self.get_resolved_status(job_id).await? {
+                return Ok(Some(status));
+            }
             return Err(WorkQueueError::JobNotFound);
         }
 
@@ -520,6 +624,16 @@ impl<
                 .await
                 .map_err(WorkQueueError::Redis)?;
             return Ok(Some(result.status));
+        }
+
+        // The job may have been resolved and cleaned up between the first check and the
+        // subscription, in which case the message this would wait for was already sent.
+        if let Some(status) = self.get_resolved_status(job_id).await? {
+            pubsub_conn
+                .unsubscribe(&channel_name)
+                .await
+                .map_err(WorkQueueError::Redis)?;
+            return Ok(Some(status));
         }
 
         let status = loop {
@@ -612,7 +726,23 @@ impl<
     /// Tries to get a job for 30s and returns `Ok(None)` if nothing shows up.
     /// When a job is claimed, register the worker's claim on the job.
     pub async fn claim_job(&self, worker_id: &str) -> Result<Option<Job<P>>> {
-        tracing::trace!("Worker {} is trying to claim a job", worker_id);
+        self.claim_job_in(None, worker_id).await
+    }
+
+    /// `claim_job`, for a worker that only takes the jobs of one partition. `None` is the
+    /// default partition, and so is the name given to `with_default_partition`.
+    pub async fn claim_job_in(
+        &self,
+        partition: Option<&str>,
+        worker_id: &str,
+    ) -> Result<Option<Job<P>>> {
+        let partition = self.pending.normalize(partition)?;
+        let pending_key = self.pending.key(partition.as_deref());
+        tracing::trace!(
+            "Worker {} is trying to claim a job at {}",
+            worker_id,
+            pending_key
+        );
 
         let mut conn = self.pool.get().await?;
 
@@ -622,14 +752,14 @@ impl<
             .redis_client
             .get_multiplexed_async_connection_with_config(&config)
             .await?;
-        pubsub_conn.subscribe(&self.queue_key).await?;
+        pubsub_conn.subscribe(&pending_key).await?;
 
         let mut remaining_time = self.claim_timeout;
         let start = Instant::now();
 
         let (job_id, priority, params) = loop {
             let result = conn
-                .zpopmin::<_, Vec<(JobId, Priority)>>(&self.queue_key, 1)
+                .zpopmin::<_, Vec<(JobId, Priority)>>(&pending_key, 1)
                 .await?;
 
             if let Some(result) = result.first() {
@@ -658,7 +788,7 @@ impl<
             remaining_time = new_remaining_time;
         };
 
-        let claim = Claim::new(worker_id, job_id, priority);
+        let claim = Claim::new(worker_id, job_id, priority).in_partition(partition);
         conn.hset::<_, _, _, ()>(&self.claims_key, job_id.to_string(), claim)
             .await?;
         tracing::info!("Gave job {} to worker {}", job_id, worker_id);
@@ -669,13 +799,30 @@ impl<
     }
 
     /// Add a job ID to the ordered set `wq:{name}:queue`, with priority as the score.
-    /// This also creates a new key named `wq:{name}:{job_id}` containing the job's parameters
+    /// This also creates a new key named `wq:{name}:queue:{job_id}` containing the job's
+    /// parameters
     pub async fn enqueue_job(
         &self,
         params: &P,
         priority: Priority,
         deadline_in: Duration,
     ) -> Result<JobId> {
+        self.enqueue_job_in(None, params, priority, deadline_in)
+            .await
+    }
+
+    /// `enqueue_job`, for a job that only the workers of one partition may take. The job ID
+    /// goes to the ordered set `wq:{name}:partition:{partition}:queue` instead; the job's
+    /// parameters are stored under the same key as for any other job.
+    pub async fn enqueue_job_in(
+        &self,
+        partition: Option<&str>,
+        params: &P,
+        priority: Priority,
+        deadline_in: Duration,
+    ) -> Result<JobId> {
+        let partition = self.pending.normalize(partition)?;
+        let pending_key = self.pending.key(partition.as_deref());
         let mut conn = self.pool.get().await?;
 
         let job_id = JobId::new();
@@ -690,20 +837,25 @@ impl<
             params,
             submitted_at: Utc::now(),
             deadline: Utc::now() + deadline_in,
+            partition: partition.clone(),
         };
         let job_desc_str = serde_json::to_string(&job_desc)?;
 
         tracing::trace!(
             "Adding job {} to queue at {} with priority {}",
             job_id,
-            self.queue_key,
+            pending_key,
             priority as i8
         );
 
-        redis::pipe()
-            .set(&job_key, job_desc_str)
-            .zadd(&self.queue_key, job_id.to_string(), priority as i8)
-            .publish(&self.queue_key, 0)
+        let mut pipe = redis::pipe();
+        pipe.set(&job_key, job_desc_str);
+        if let Some(partition) = &partition {
+            // So that the stats can count what is pending everywhere.
+            pipe.sadd(&self.pending.partitions_key, partition);
+        }
+        pipe.zadd(&pending_key, job_id.to_string(), priority as i8)
+            .publish(&pending_key, 0)
             .exec_async(&mut *conn)
             .await?;
 
@@ -717,8 +869,17 @@ impl<
 
         tracing::info!("Cancelling job {}", job_id);
 
+        // A pending job is in the set of the partition it was enqueued in, which only its
+        // description says. A job without one isn't pending anywhere.
+        let partition = conn
+            .get::<_, Option<String>>(self.get_job_key(&job_id))
+            .await?
+            .and_then(|desc| serde_json::from_str::<JobPartition>(&desc).ok())
+            .and_then(|desc| desc.partition);
+        let pending_key = self.pending.key(partition.as_deref());
+
         redis::pipe()
-            .zrem(&self.queue_key, job_id.to_string())
+            .zrem(&pending_key, job_id.to_string())
             .del(self.get_job_key(&job_id))
             .hdel(&self.claims_key, job_id.to_string())
             .exec_async(&mut *conn)
@@ -742,9 +903,23 @@ impl<
             .get::<_, Option<u64>>(self.get_stats_key("errored"))
             .await?
             .unwrap_or(0);
-        let jobs_scheduled = conn
+        // Pending jobs are counted over every partition that ever had one. The other numbers
+        // are kept for the queue as a whole.
+        let partitions = conn
+            .smembers::<_, Vec<String>>(&self.pending.partitions_key)
+            .await?;
+        let mut jobs_scheduled: u64 = conn
             .zcount(&self.queue_key, Priority::High as i8, Priority::Low as i8)
             .await?;
+        for partition in &partitions {
+            jobs_scheduled += conn
+                .zcount::<_, _, _, u64>(
+                    self.pending.key(Some(partition)),
+                    Priority::High as i8,
+                    Priority::Low as i8,
+                )
+                .await?;
+        }
         let jobs_claimed = conn.hlen(&self.claims_key).await?;
 
         Ok(QueueStats {
@@ -762,6 +937,10 @@ impl<
 
     pub fn get_result_key(&self, job_id: &JobId) -> String {
         format!("{}:{}", self.results_key, &job_id)
+    }
+
+    fn get_resolved_key(&self, job_id: &JobId) -> String {
+        format!("{}:{}", self.resolved_key, job_id)
     }
 
     pub fn get_stats_key(&self, stat_name: &str) -> String {

@@ -1016,9 +1016,8 @@ mod tests {
                 options: test_options(),
                 error: None,
             };
-            // A real worker takes seconds. Resolving at once can beat `wait_for_job` to its
-            // subscription, and the result is gone by the time it looks for it.
-            rocket::tokio::time::sleep(Duration::from_millis(250)).await;
+            // Resolved at once, which a real worker never does: the result is then gone before
+            // the process that asked has started waiting for it, and it must still be told.
             resolving_queue
                 .resolve_job("worker", job.job_id, JobStatus::Success, Some(response))
                 .await

@@ -94,7 +94,11 @@ Several lobby processes can serve the same deployment, with one caveat about the
 
 # Archipelago versions
 
-The workers (`yaml-checker`, `generator`, `option-generator`) run Archipelago itself, and a worker image is built for exactly one Archipelago version, called its base. Every request a worker makes to the lobby's queues names the base it runs.
+The workers (`yaml-checker`, `generator`, `option-generator`) run Archipelago itself, and a worker image is built for exactly one Archipelago version, called its base. Every request a worker makes to the lobby's queues names the base it runs, and the lobby only hands a worker the jobs of that base.
+
+For now every job is for one base, the `archipelago_version` of the index. A worker built for any other base connects, waits, and is never given a job. A worker that names no base, as the ones built before this did, is treated as running the index's version.
+
+Each queue keeps its waiting jobs in one list per base. The index's version uses the keys the queue always had (`wq:<queue>:queue`), so jobs that are waiting or running across an upgrade or a rollback are not lost; any other base uses `wq:<queue>:partition:<base>:queue`.
 
 ## Building a worker for a base
 
@@ -110,17 +114,26 @@ docker build --build-arg SRC=. --build-arg DOCKER_SRC=taskcluster/docker/ap-work
 The build fails if the pinned Archipelago commit reports a different version than the file is named after.
 
 - To move a base to a newer commit of the fork, change `BASE_COMMIT` in its pin file and note the fork tag beside it.
-- To add a base, add its pin file and add the base to the `image-ap-worker` matrix in `.gitlab-ci.yml`.
+- To add a base, add its pin file, add the base to the `image-ap-worker` matrix in `.gitlab-ci.yml`, and move `NEWEST_BASE` there if it is the newest. The index's CI keeps its own list of bases and needs the new one too, see below.
 
-CI pushes these `ap-worker` tags for each base:
+CI pushes these `ap-worker` tags:
 
-| Tag | Pushed from |
-|---|---|
-| `sha-<short sha>-<base>` | every branch |
-| `<base>` | `main` |
-| `<base>-dev` | `ionium-dev` |
+| Tag | Pushed from | Which build |
+|---|---|---|
+| `sha-<short sha>-<base>` | every branch | each base |
+| `<base>` | `main` | each base |
+| `<base>-dev` | `ionium-dev` | each base |
+| `latest` | `main` | the newest base |
+| `dev` | `ionium-dev` | the newest base |
 
-The tags that carry no base (`sha-<short sha>`, `latest`, `dev`) currently point at the 0.6.7 build.
+`latest` and `dev` change Archipelago version whenever a base is added, so nothing that needs a given version should pull them. Unlike the other images, `ap-worker` has no `sha-<short sha>` tag without a base.
+
+## Who builds on these images
+
+- **The lobby's own deployments** pin `ap-lobby:sha-<short sha>` and, for each worker, `ap-worker:sha-<short sha>-<base>` of the same commit.
+- **The index's CI** (the `Archipelago-index-ci` repository) builds one checker image per base, `ap-checker:<base>` on `ap-worker:<base>`, and fails its build if the two disagree on the Archipelago version. The jobs that run apworld code (`check`, `unit-tests`, `network-audit`, `fuzz`) run once per base, each on the versions that `apwm changes` reports as added on that base. The fuzzer and the linter in a checker image are the ones pinned in the base's pin file here.
+
+The index's CI can't read its bases from the index, so it lists them itself: in the matrix of each of those jobs and its checker image build, and in `AP_BASES` in `index-validate.yml`. Its `diff` job warns when the index declares a base that has no lane. A base added here and to the index is not tested there until it is added to those lists.
 
 ## How the bases differ
 
