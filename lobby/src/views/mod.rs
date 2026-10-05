@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::db::{self, Room, RoomFilter};
 use crate::error::Result;
@@ -149,9 +149,21 @@ async fn help<'a>(
     })
 }
 
+// `STYLESHEETS`, each one's file name and CSS. They are compiled from `static/sass` when the
+// lobby is built, see `build.rs`, and exist nowhere in the repository.
+include!(concat!(env!("OUT_DIR"), "/stylesheets.rs"));
+
 #[get("/static/<file..>")]
 #[tracing::instrument]
 fn dist(file: PathBuf) -> Option<(ContentType, Cow<'static, [u8]>)> {
+    if let Ok(stylesheet) = file.strip_prefix("css") {
+        let (_, css) = STYLESHEETS
+            .iter()
+            .find(|(name, _)| stylesheet == Path::new(name))?;
+
+        return Some((ContentType::CSS, Cow::Borrowed(css.as_bytes())));
+    }
+
     let filename = file.display().to_string();
     let asset = Asset::get(&filename)?;
     let content_type = file
