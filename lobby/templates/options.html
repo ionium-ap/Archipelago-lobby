@@ -795,8 +795,10 @@
                 method: 'POST',
                 body: formData
             })
-            .then(response => {
-                if (!response.ok) throw new Error('Download failed');
+            .then(async response => {
+                if (!response.ok) throw new Error(await response.text() || 'Download failed');
+                // The YAML is never behind a redirect, following one leads to some other page
+                if (response.redirected) throw new Error('Download failed');
                 const disposition = response.headers.get('Content-Disposition');
                 const match = disposition?.match(/filename="(.+)"/);
                 const filename = match ? match[1] : 'options.yaml';

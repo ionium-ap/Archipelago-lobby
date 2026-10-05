@@ -299,7 +299,7 @@ pub async fn main() -> crate::error::Result<()> {
 
     let lobby_config = get_lobby_config();
 
-    let options_cache: OptionsCache = std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    let options_cache = OptionsCache::new(redis_pool.clone());
 
     let options_gen_queue = OptionsGenQueue::builder("options_gen")
         .with_callback(get_options_gen_callback(options_cache.clone()))

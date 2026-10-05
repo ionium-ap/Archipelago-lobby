@@ -61,7 +61,7 @@ Generate strong random values for each row. `openssl rand -hex 32` or `openssl r
 | `OTLP_ENDPOINT` | Enables OpenTelemetry / OTLP tracing. |
 | `RUST_LOG` | Log filter, e.g. `info,ap_lobby=debug`. The compose example sets `debug`. |
 | `SKIP_APWORLDS_UPDATE` | If set, skips fetching the apworld index on startup (useful for offline dev). |
-| `PRELOAD_OPTIONS_DEFS` | If set, eagerly preloads option schemas into Redis at startup. |
+| `PRELOAD_OPTIONS_DEFS` | If set, eagerly preloads option schemas into Valkey at startup, skipping the ones already there. |
 | `ADMIN_ROOMS_ONLY` | Restricts room creation to admins. Non-admins lose the "Create new room" links and the `/create-room` handlers reject them; existing rooms and everything else about them are unaffected. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`, case-insensitive. Unset or empty means off; **any other value aborts startup**. |
 
 ## Discord OAuth
@@ -79,6 +79,18 @@ banned_users = []   # optional
 ```
 
 The `redirect_uri` must exactly match a redirect URI registered in your Discord developer application.
+
+## Running more than one lobby process
+
+Several lobby processes can serve the same deployment, with one caveat about the index.
+
+| State | Where it lives | With several processes |
+|---|---|---|
+| Rooms, YAMLs, validation results, generations | Postgres | Shared. |
+| Job queues, sessions | Valkey | Shared. A worker's result is handled by whichever process the worker is connected to. |
+| Option definitions for the options page | Valkey, for 24 hours | Shared. To drop them sooner, for example after fixing the options generator, delete the `options_def:*` keys. |
+| Downloaded apworlds | `APWORLDS_PATH` | Shared if the directory is. |
+| The parsed index | The memory of each process | **Not shared.** `/worlds/refresh` updates only the process that serves the request. Restart the others afterwards, or they keep validating against the old index. |
 
 # Archipelago versions
 

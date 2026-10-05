@@ -55,6 +55,7 @@ sentry-tracing = "0.46.0"
 regex = "1.11.1"
 rocket_ws = "=0.1.0"
 deadpool-redis = "0.23.0"
+flate2 = "1.1"
 redis = "1.0.5"
 indexmap = { version = "2.12.1", features = ["serde"] }
 

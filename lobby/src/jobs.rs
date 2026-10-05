@@ -200,9 +200,10 @@ pub fn get_options_gen_callback(
                     return Ok(true);
                 };
 
-                let cache_key = (desc.params.apworld.0, desc.params.apworld.1);
-                let mut cache = cache.write().await;
-                cache.insert(cache_key, response.options);
+                let (apworld_name, version) = &desc.params.apworld;
+                cache
+                    .insert(apworld_name, version, &response.options)
+                    .await?;
 
                 Ok(true)
             }
