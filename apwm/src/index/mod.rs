@@ -18,35 +18,49 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
-use world::{World, WorldOrigin};
+use world::{World, WorldDef};
 
+/// `index.toml` as it's written
 #[derive(Deserialize, Debug, Clone)]
-pub struct Index {
-    #[serde(skip)]
-    pub path: PathBuf,
+struct IndexFile {
     #[serde(with = "http_serde::uri")]
-    pub archipelago_repo: Uri,
-    pub archipelago_version: Version,
-    pub index_homepage: String,
-    pub index_dir: PathBuf,
+    archipelago_repo: Uri,
+    archipelago_version: Version,
+    index_homepage: String,
+    index_dir: PathBuf,
     #[serde(default)]
-    pub worlds: BTreeMap<String, World>,
+    bases: BTreeMap<Version, BaseDef>,
 }
 
-impl Index {
+/// A `[bases."<version>"]` table. Declaring the base is all it does for now.
+#[derive(Deserialize, Debug, Clone, Default)]
+struct BaseDef {}
+
+/// Every Archipelago base an index describes, each with the `Index` that rooms on it see.
+#[derive(Debug, Clone)]
+pub struct IndexSet {
+    pub path: PathBuf,
+    /// `archipelago_version` in `index.toml`. It's the only base that lobbies from before
+    /// multi-base support know about, and it always has a view here.
+    pub legacy_base: Version,
+    bases: BTreeMap<Version, Index>,
+}
+
+impl IndexSet {
     pub fn new(index_path: &Path) -> Result<Self> {
         let index_content = std::fs::read_to_string(index_path).context("Reading index.toml")?;
         let deser = toml::Deserializer::parse(&index_content)?;
-        let mut index: Index = serde_path_to_error::deserialize(deser)?;
+        let index_file: IndexFile = serde_path_to_error::deserialize(deser)?;
         let index_dir_resolved = index_path
             .parent()
             .context("index_path doesn't have a parent")?
-            .join(&index.index_dir);
+            .join(&index_file.index_dir);
 
         if !index_dir_resolved.is_dir() {
             bail!("The specified index directory isn't a directory or doesn't exist");
         }
 
+        let mut world_defs = BTreeMap::new();
         let world_tomls = fs::read_dir(index_dir_resolved)?;
         for world_toml in world_tomls {
             let world_toml = world_toml?;
@@ -55,23 +69,111 @@ impl Index {
                 .file_stem()
                 .with_context(|| format!("World path {world_path:?} is invalid"))?
                 .to_string_lossy();
-            let mut world = World::new(&world_toml.path())?;
-            if world.disabled {
-                continue;
-            }
+            let world_def = WorldDef::new(&world_toml.path())?;
 
-            if world.supported {
-                world
-                    .versions
-                    .insert(index.archipelago_version.clone(), WorldOrigin::Supported);
-            }
-
-            index.worlds.insert(apworld_name.to_string(), world);
+            world_defs.insert(apworld_name.to_string(), world_def);
         }
 
-        index.path = index_path.into();
+        // An index without a `[bases]` table describes a single base
+        let mut base_versions: Vec<Version> = index_file.bases.keys().cloned().collect();
+        if !base_versions.contains(&index_file.archipelago_version) {
+            base_versions.push(index_file.archipelago_version.clone());
+        }
 
-        Ok(index)
+        let mut bases = BTreeMap::new();
+        for base in base_versions {
+            let mut worlds = BTreeMap::new();
+            for (apworld_name, world_def) in &world_defs {
+                if let Some(world) = world_def.for_base(&base)? {
+                    worlds.insert(apworld_name.clone(), world);
+                }
+            }
+
+            let index = Index {
+                path: index_path.into(),
+                archipelago_repo: index_file.archipelago_repo.clone(),
+                archipelago_version: base.clone(),
+                index_homepage: index_file.index_homepage.clone(),
+                index_dir: index_file.index_dir.clone(),
+                worlds,
+            };
+            bases.insert(base, index);
+        }
+
+        Ok(Self {
+            path: index_path.into(),
+            legacy_base: index_file.archipelago_version,
+            bases,
+        })
+    }
+
+    pub fn bases(&self) -> impl Iterator<Item = &Version> {
+        self.bases.keys()
+    }
+
+    pub fn get(&self, base: &Version) -> Option<&Index> {
+        self.bases.get(base)
+    }
+
+    pub fn legacy(&self) -> &Index {
+        &self.bases[&self.legacy_base]
+    }
+
+    /// Downloads the releases of every base. A release is the same file whichever base runs it,
+    /// so they all share `destination` and the lock file.
+    pub async fn refresh_into(
+        &self,
+        destination: &Path,
+        only_new: bool,
+        precise: Option<(String, Version)>,
+    ) -> Result<IndexLock> {
+        self.all_releases()
+            .refresh_into(destination, only_new, precise)
+            .await
+    }
+
+    /// An index holding every release that any base can download. It isn't what any base sees.
+    fn all_releases(&self) -> Index {
+        let mut all = self.legacy().clone();
+        for index in self.bases.values() {
+            for (apworld_name, world) in &index.worlds {
+                let merged = all
+                    .worlds
+                    .entry(apworld_name.clone())
+                    .or_insert_with(|| world.clone());
+                for (version, origin) in &world.versions {
+                    merged
+                        .versions
+                        .entry(version.clone())
+                        .or_insert_with(|| origin.clone());
+                }
+            }
+        }
+        for world in all.worlds.values_mut() {
+            world.versions.retain(|_, origin| !origin.is_supported());
+        }
+
+        all
+    }
+}
+
+/// The worlds and releases available to rooms on one Archipelago base, `archipelago_version`
+#[derive(Debug, Clone)]
+pub struct Index {
+    pub path: PathBuf,
+    pub archipelago_repo: Uri,
+    pub archipelago_version: Version,
+    pub index_homepage: String,
+    pub index_dir: PathBuf,
+    pub worlds: BTreeMap<String, World>,
+}
+
+impl Index {
+    /// The index as its legacy base sees it. See `IndexSet` for the other bases.
+    pub fn new(index_path: &Path) -> Result<Self> {
+        let index_set = IndexSet::new(index_path)?;
+
+        Ok(index_set.legacy().clone())
     }
 
     pub async fn refresh_into(

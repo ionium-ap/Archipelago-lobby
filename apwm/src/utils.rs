@@ -30,6 +30,12 @@ pub(crate) mod de {
         })
     }
 
+    pub fn option_version_req_external<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<VersionReq>, D::Error> {
+        version_req_external(d).map(Some)
+    }
+
     struct DefaultMapVisitor<K, V> {
         marker: PhantomData<fn() -> BTreeMap<K, V>>,
     }

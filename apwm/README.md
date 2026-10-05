@@ -85,3 +85,88 @@ Additionally, `default_version` can also be:
  - `"latest"`: Uses the latest version.
  - `"latest_supported"`: Uses the latest supported version. Only valid for supported worlds.
  - `"disabled"`: Disables the world by default.
+
+## Several Archipelago versions
+
+An index can describe more than one Archipelago version at once. Each one is called a base, and
+every base gets its own view of the index: its own list of worlds, and for each world its own
+list of releases. `IndexSet` parses the index and holds one `Index` per base.
+
+Everything in this section is ignored by lobbies from before this was supported. They keep
+reading `archipelago_version` and `[versions]` and nothing else, so those two describe the
+oldest base, the legacy base, and have to stay correct for it.
+
+### Declaring bases
+
+```toml
+archipelago_repo = "https://github.com/ArchipelagoMW/Archipelago.git"
+archipelago_version = "0.6.7"
+index_homepage = "https://github.com/ionium-ap/Archipelago-index"
+index_dir = "index"
+
+[bases."0.6.7"]
+[bases."0.6.8"]
+```
+
+`archipelago_version` is the legacy base. It is always a base, listed or not, and an index
+without a `[bases]` table has only that one.
+
+### Releases that depend on the base
+
+A release in `[versions]` is available on every base. To restrict one, or to add one that the
+legacy base can't run, use `[releases]`:
+
+```toml
+name = "Pokemon Crystal"
+home = "https://discord.com/channels/731205301247803413/1365127145709502575"
+default_url = "https://github.com/gerbiljames/Archipelago/releases/download/{{version}}/pokemon_crystal.apworld"
+
+[versions]
+"5.4.6" = {}
+"6.0.0" = {}
+
+[releases]
+"5.4.6" = { max_ap_version = "0.6.7" }
+"7.0.0" = { min_ap_version = "0.6.8" }
+"7.0.1" = { min_ap_version = "0.6.8", url = "https://github.com/gerbiljames/Archipelago/releases/download/7.0.1-hotfix/pokemon_crystal.apworld" }
+```
+
+The constraints, and the releases in `[releases]`, are made up for the example.
+
+- `min_ap_version` and `max_ap_version` are both inclusive and both optional.
+- A release can be in both tables. `[versions]` keeps it visible to older lobbies, `[releases]`
+  says which bases can run it. Here 5.4.6 is offered on 0.6.7 only.
+- A release that's only in `[releases]` takes `url` or `local` there, or uses `default_url`.
+- A release that needs a base newer than the legacy one must not be in `[versions]`: older
+  lobbies would pick it as the latest.
+- A `[versions]` entry must keep a single key. Older lobbies silently drop its `url` if it has a
+  second one, which is why the constraints live in their own table.
+
+### Worlds that depend on the base
+
+The top-level `supported`, `disabled` and `default_version` of a world describe the legacy base.
+A `[base."<requirement>"]` table overrides any of the three for the bases matching its semver
+requirement:
+
+```toml
+# A custom world that became a core world in 0.6.8
+name = "Gauntlet Legends"
+default_url = "https://example.com/gl-{{version}}/gl.apworld"
+
+[versions]
+"2.1.7" = {}
+
+[releases]
+"2.1.7" = { max_ap_version = "0.6.7" }
+
+[base.">=0.6.8"]
+supported = true
+default_version = "latest_supported"
+```
+
+At most one `[base]` table of a world may match a given base.
+
+A world isn't part of a base's view when it's disabled there or when none of its releases can run
+there. Older lobbies only know the first of those two: a world they must not offer has to be
+`disabled = true` at the top level, and enabled again with `[base."<requirement>"]` for the bases
+that have it.

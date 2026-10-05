@@ -8,6 +8,11 @@
 //!
 //! The tests at the end pin the parser behaviors the format works around. They are the reason a
 //! constraint cannot simply be added to a `[versions]` entry.
+//!
+//! All of this first passed against the parser from before multi-base support, unchanged. That
+//! parser is gone from this crate: `Index::new` now returns the legacy base's view of an
+//! `IndexSet`, so these tests check that this view is what the older parser produced. The
+//! older parser itself is run against the real index by the index's CI.
 
 use std::path::{Path, PathBuf};
 
@@ -256,28 +261,37 @@ default_url = "https://example.invalid/world-{{version}}/world.apworld"
     );
 }
 
+/// The older parser listed this world with no release at all, and then failed to build a
+/// default manifest. That is why such a world has to be disabled at the top level.
 #[test]
-fn test_world_without_versions_breaks_the_default_manifest() {
+fn test_world_without_a_release_on_the_base_is_not_listed() {
     let dir = write_index(
         LEGACY_INDEX_TOML,
-        &[(
-            "world",
-            r#"
+        &[
+            (
+                "good",
+                r#"
+name = "Good World"
+supported = true
+"#,
+            ),
+            (
+                "world",
+                r#"
 name = "World"
 default_url = "https://example.invalid/world-{{version}}/world.apworld"
 
 [releases]
 "1.0.0" = { min_ap_version = "0.6.8" }
 "#,
-        )],
+            ),
+        ],
     );
 
     let index = Index::new(&dir.path().join("index.toml")).unwrap();
 
-    assert!(
-        Manifest::from_index_with_default_versions(&index).is_err(),
-        "A world with nothing in [versions] has to be disabled at the top level"
-    );
+    assert!(!index.worlds.contains_key("world"));
+    assert!(Manifest::from_index_with_default_versions(&index).is_ok());
 }
 
 #[test]

@@ -78,8 +78,51 @@ pub enum WorldTag {
 
 static AP_CACHE: OnceLock<TempDir> = OnceLock::new();
 
+/// A release declared in `[releases]`: which Archipelago bases can run it and, optionally, where
+/// to get it. Lobbies from before multi-base support don't read that table.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct Release {
+    #[serde(default)]
+    pub min_ap_version: Option<Version>,
+    #[serde(default)]
+    pub max_ap_version: Option<Version>,
+    #[serde(with = "http_serde::option::uri", default)]
+    pub url: Option<Uri>,
+    #[serde(default)]
+    pub local: Option<PathBuf>,
+}
+
+impl Release {
+    /// Both bounds are inclusive, and a missing bound doesn't constrain anything.
+    pub fn runs_on(&self, base: &Version) -> bool {
+        self.min_ap_version.as_ref().is_none_or(|min| min <= base)
+            && self.max_ap_version.as_ref().is_none_or(|max| base <= max)
+    }
+
+    fn origin(&self) -> Option<WorldOrigin> {
+        if let Some(url) = &self.url {
+            return Some(WorldOrigin::Url(url.clone()));
+        }
+
+        self.local.clone().map(WorldOrigin::Local)
+    }
+}
+
+/// What a `[base."<requirement>"]` table changes for the bases matching its requirement.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct BaseOverride {
+    #[serde(default)]
+    pub supported: Option<bool>,
+    #[serde(default)]
+    pub disabled: Option<bool>,
+    #[serde(deserialize_with = "de::option_version_req_external", default)]
+    pub default_version: Option<VersionReq>,
+}
+
+/// A world file as it's written in the index. It describes the world for every Archipelago base
+/// at once, `for_base` turns it into the `World` that a given base sees.
 #[derive(Deserialize, Debug, Clone)]
-pub struct World {
+pub struct WorldDef {
     #[serde(skip)]
     pub path: PathBuf,
     pub name: String,
@@ -94,14 +137,20 @@ pub struct World {
     #[serde(deserialize_with = "de::map_with_default_value", default)]
     pub versions: BTreeMap<Version, WorldOrigin>,
     #[serde(default)]
+    pub releases: BTreeMap<Version, Release>,
+    #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
     pub supported: bool,
     #[serde(default)]
     pub tags: Vec<WorldTag>,
+    #[serde(default, rename = "base")]
+    raw_base_overrides: BTreeMap<String, BaseOverride>,
+    #[serde(skip)]
+    pub base_overrides: Vec<(semver::VersionReq, BaseOverride)>,
 }
 
-impl World {
+impl WorldDef {
     pub fn new(world_path: &Path) -> Result<Self> {
         let world_content = std::fs::read_to_string(world_path)?;
         let deser = toml::Deserializer::parse(&world_content)?;
@@ -110,9 +159,129 @@ impl World {
         if world.display_name.is_empty() {
             world.display_name = world.name.clone();
         }
+
+        for (requirement, base_override) in std::mem::take(&mut world.raw_base_overrides) {
+            let parsed = semver::VersionReq::parse(&requirement).with_context(|| {
+                format!(
+                    "World {}: `{requirement}` in [base] isn't a version requirement",
+                    world.name
+                )
+            })?;
+            world.base_overrides.push((parsed, base_override));
+        }
+
+        for (version, release) in &world.releases {
+            if release.url.is_some() && release.local.is_some() {
+                bail!(
+                    "World {}: release {version} has both a `url` and a `local` path",
+                    world.name
+                );
+            }
+        }
+
         Ok(world)
     }
 
+    fn override_for(&self, base: &Version) -> Result<Option<&BaseOverride>> {
+        let mut matching = self
+            .base_overrides
+            .iter()
+            .filter(|(requirement, _)| requirement.matches(base));
+
+        let Some((first, base_override)) = matching.next() else {
+            return Ok(None);
+        };
+        if let Some((second, _)) = matching.next() {
+            bail!(
+                "World {}: both [base.\"{first}\"] and [base.\"{second}\"] apply to Archipelago {base}",
+                self.name
+            );
+        }
+
+        Ok(Some(base_override))
+    }
+
+    /// The world as lobbies see it for rooms on `base`, or `None` if that base doesn't have it:
+    /// either because it's disabled there, or because none of its releases can run on it.
+    pub fn for_base(&self, base: &Version) -> Result<Option<World>> {
+        let base_override = self.override_for(base)?;
+
+        let disabled = base_override
+            .and_then(|o| o.disabled)
+            .unwrap_or(self.disabled);
+        if disabled {
+            return Ok(None);
+        }
+
+        let supported = base_override
+            .and_then(|o| o.supported)
+            .unwrap_or(self.supported);
+        let default_version = base_override
+            .and_then(|o| o.default_version.clone())
+            .unwrap_or_else(|| self.default_version.clone());
+
+        let mut versions = BTreeMap::new();
+        for (version, origin) in &self.versions {
+            let runs_on_base = self.releases.get(version).is_none_or(|r| r.runs_on(base));
+            if runs_on_base {
+                versions.insert(version.clone(), origin.clone());
+            }
+        }
+        for (version, release) in &self.releases {
+            if !release.runs_on(base) {
+                continue;
+            }
+
+            // A release that's also in `[versions]` keeps the origin it has there unless
+            // `[releases]` gives it one
+            match release.origin() {
+                Some(origin) => {
+                    versions.insert(version.clone(), origin);
+                }
+                None => {
+                    versions.entry(version.clone()).or_default();
+                }
+            }
+        }
+
+        if supported {
+            versions.insert(base.clone(), WorldOrigin::Supported);
+        }
+        if versions.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(World {
+            path: self.path.clone(),
+            name: self.name.clone(),
+            display_name: self.display_name.clone(),
+            default_url: self.default_url.clone(),
+            default_version,
+            home: self.home.clone(),
+            versions,
+            disabled,
+            supported,
+            tags: self.tags.clone(),
+        }))
+    }
+}
+
+/// A world as one Archipelago base sees it. Built by `WorldDef::for_base`.
+#[derive(Debug, Clone)]
+pub struct World {
+    pub path: PathBuf,
+    pub name: String,
+    pub display_name: String,
+    pub default_url: Option<Uri>,
+    pub default_version: VersionReq,
+    pub home: Option<String>,
+    pub versions: BTreeMap<Version, WorldOrigin>,
+    pub disabled: bool,
+    pub supported: bool,
+    pub tags: Vec<WorldTag>,
+}
+
+impl World {
     pub fn get_latest_release(&self) -> Option<(&Version, &WorldOrigin)> {
         self.versions.iter().max_by_key(|p| p.0)
     }
