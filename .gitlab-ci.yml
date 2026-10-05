@@ -24,9 +24,9 @@
 # ap-worker is built once per Archipelago base, so its tags carry the base,
 # and its moving tag follows the newest one. See the image-ap-worker job.
 #
-# Every job's `changes:` filter includes .gitlab-ci.yml, the build recipe
-# itself. Otherwise a fix to this file can only be deployed via a manual
-# web-triggered run.
+# A commit builds every image or none: all jobs share one set of rules, see
+# .build-rules. A deployment runs the lobby and its workers from one commit,
+# so for any commit that has one image, the others have to exist too.
 
 # Only run on the canonical GitLab instance. If this YAML ends up on a fork,
 # a different instance, or a mirror elsewhere, no pipeline is created at all.
@@ -43,6 +43,31 @@ stages:
 
 # ---- shared anchors ----
 
+# When the jobs run. The same for all of them, through .cargo-build and
+# .buildah-build: a change to anything that goes into any image builds them
+# all, under one :sha-<short sha>. A job must not get rules of its own, or
+# some commits would again have one image and lack another.
+#
+# The list is everything an image is made from. What isn't in it (the README,
+# the compose example, the Taskcluster task graph) builds nothing.
+# .gitlab-ci.yml is in it: otherwise a fix to this file could only be
+# deployed with a manual run. A pipeline started from the web interface
+# builds everything whatever changed.
+.build-rules: &build-rules
+  - if: '$CI_COMMIT_BRANCH'
+    changes:
+      - "Cargo.*"
+      - "common/**/*"
+      - "apwm/**/*"
+      - "wq/**/*"
+      - "lobby/**/*"
+      - "apdiff-viewer/**/*"
+      - "community-ap-tools/**/*"
+      - "ap-worker/**/*"
+      - "taskcluster/docker/**/*"
+      - ".gitlab-ci.yml"
+  - if: '$CI_PIPELINE_SOURCE == "web"'
+
 .rust-cache: &rust-cache
   cache:
     key: cargo-$CI_COMMIT_REF_SLUG
@@ -54,6 +79,7 @@ stages:
 
 .cargo-build: &cargo-build
   stage: rust-build
+  rules: *build-rules
   image: rust:1.92-trixie
   tags:
     - linux
@@ -68,6 +94,7 @@ stages:
 # isolation boundary. Storage setup mirrors Archipelago-index-ci's working pipeline.
 .buildah-build: &buildah-build
   stage: image
+  rules: *build-rules
   image: quay.io/buildah/stable
   tags:
     - linux
@@ -121,10 +148,6 @@ stages:
 
 build-apwm:
   <<: *cargo-build
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin apwm --features cli
     - mkdir -p artifacts/apwm
@@ -135,10 +158,6 @@ build-apwm:
 
 build-apdiff-viewer:
   <<: *cargo-build
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin apdiff-viewer
     - mkdir -p artifacts/apdiff-viewer
@@ -149,10 +168,6 @@ build-apdiff-viewer:
 
 build-ap-lobby:
   <<: *cargo-build
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin ap-lobby
     - mkdir -p artifacts/ap-lobby
@@ -163,10 +178,6 @@ build-ap-lobby:
 
 build-community-ap-tools:
   <<: *cargo-build
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - cargo build --release --bin community-ap-tools
     - mkdir -p artifacts/community-ap-tools
@@ -180,10 +191,6 @@ build-community-ap-tools:
 image-apwm:
   <<: *buildah-build
   needs: [build-apwm]
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "taskcluster/docker/apwm/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/apwm"
     - cp artifacts/apwm/build-result taskcluster/docker/apwm/build-result
@@ -196,10 +203,6 @@ image-apwm:
 image-apdiff-viewer:
   <<: *buildah-build
   needs: [build-apdiff-viewer]
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "apwm/**/*", "apdiff-viewer/**/*", "taskcluster/docker/apdiff-viewer/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/apdiff-viewer"
     - cp artifacts/apdiff-viewer/build-result taskcluster/docker/apdiff-viewer/build-result
@@ -212,10 +215,6 @@ image-apdiff-viewer:
 image-ap-lobby:
   <<: *buildah-build
   needs: [build-ap-lobby]
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "wq/**/*", "apwm/**/*", "lobby/**/*", "taskcluster/docker/ap-lobby/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-lobby"
     - cp artifacts/ap-lobby/build-result taskcluster/docker/ap-lobby/build-result
@@ -228,10 +227,6 @@ image-ap-lobby:
 image-community-ap-tools:
   <<: *buildah-build
   needs: [build-community-ap-tools]
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes: ["Cargo.*", "common/**/*", "community-ap-tools/**/*", "taskcluster/docker/community-ap-tools/**/*", ".gitlab-ci.yml"]
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/community-ap-tools"
     - cp artifacts/community-ap-tools/build-result taskcluster/docker/community-ap-tools/build-result
@@ -261,13 +256,6 @@ image-ap-worker:
   parallel:
     matrix:
       - AP_BASE: ["0.6.7", "0.6.8"]
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-      changes:
-        - "ap-worker/**/*"
-        - "taskcluster/docker/ap-worker/**/*"
-        - ".gitlab-ci.yml"
-    - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-worker"
     - NEWEST_BASE="0.6.8"

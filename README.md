@@ -188,7 +188,7 @@ CI pushes these `ap-worker` tags:
 
 ## Who builds on these images
 
-- **The lobby's own deployments** pin `ap-lobby:sha-<short sha>` and, for each worker, `ap-worker:sha-<short sha>-<base>` of the same commit.
+- **The lobby's own deployments** pin `ap-lobby:sha-<short sha>` and, for each worker, `ap-worker:sha-<short sha>-<base>` of the same commit. CI builds every image for a commit or none of them, so a commit that has one has them all. A commit that changes nothing an image is made from, such as this README, has none.
 - **The index's CI** (the `Archipelago-index-ci` repository) builds one checker image per base, `ap-checker:<base>` on `ap-worker:<base>`, and fails its build if the two disagree on the Archipelago version. The jobs that run apworld code (`check`, `unit-tests`, `network-audit`, `fuzz`) run once per base, each on the versions that `apwm changes` reports as added on that base. The fuzzer and the linter in a checker image are the ones pinned in the base's pin file here.
 
 The index's CI can't read its bases from the index, so it lists them itself: in the matrix of each of those jobs and its checker image build, and in `AP_BASES` in `index-validate.yml`. Its `diff` job warns when the index declares a base that has no lane. A base added here and to the index is not tested there until it is added to those lists.
