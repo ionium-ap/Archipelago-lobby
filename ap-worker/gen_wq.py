@@ -132,6 +132,9 @@ class GenerationQueue(LobbyQueue):
                         "skip_output": False,
                         "csv_output": False,
                         "log_time": False,
+                        # Read by Archipelago 0.6.8 and later. Off because a room counts one
+                        # player per YAML, see the matching check in checker.py
+                        "allow_quantity": False,
                     }
                 )
 

@@ -204,6 +204,8 @@ if __name__ == "__main__":
     ap_handler.load_apworld("apquest", ap_version)
 
     # Unload as many worlds as possible before running tests
+    # From Archipelago 0.6.8 on, the general tests can also be narrowed with the `AP_TEST_WORLDS`
+    # environment variable. Leave it unset here, it would fight with this.
     loaded_worlds = list(AutoWorldRegister.world_types.keys())
     for loaded_world in loaded_worlds:
         # Those worlds are essential to testing

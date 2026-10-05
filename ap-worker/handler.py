@@ -15,7 +15,9 @@ ap_path = os.path.abspath(os.path.dirname(sys.argv[0]))
 sys.path.insert(0, ap_path)
 
 # Register a custom finder to allow dynamic apworld loading
-# This is needed because upstream's APWorldModuleFinder doesn't expose its spec dict
+# This is needed because upstream's APWorldModuleFinder doesn't expose its spec dict before
+# Archipelago 0.6.8, and this harness serves older versions too. From 0.6.8 on both finders are
+# installed and each one returns None for the names it doesn't hold.
 _dynamic_apworld_specs = {}
 
 class _DynamicAPWorldFinder(importlib.abc.MetaPathFinder):

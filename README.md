@@ -80,6 +80,51 @@ banned_users = []   # optional
 
 The `redirect_uri` must exactly match a redirect URI registered in your Discord developer application.
 
+# Archipelago versions
+
+The workers (`yaml-checker`, `generator`, `option-generator`) run Archipelago itself, and a worker image is built for exactly one Archipelago version, called its base. Every request a worker makes to the lobby's queues names the base it runs.
+
+## Building a worker for a base
+
+Each base has a pin file, `taskcluster/docker/ap-worker/bases/<base>.env`, holding the commits of Archipelago, the fuzzer and the linter that its image is built from. Archipelago comes from the [ionium fork](https://github.com/ionium-ap/Archipelago), which keeps one patched line per upstream release; [its own notes](https://github.com/ionium-ap/Archipelago/blob/ionium-0.6.8/docs/ionium%20fork.md) list what each line carries and why.
+
+The Dockerfile takes the base as a build argument and defaults to `0.6.7`:
+
+```
+docker build --build-arg SRC=. --build-arg DOCKER_SRC=taskcluster/docker/ap-worker \
+    --build-arg AP_BASE=0.6.8 -f taskcluster/docker/ap-worker/Dockerfile .
+```
+
+The build fails if the pinned Archipelago commit reports a different version than the file is named after.
+
+- To move a base to a newer commit of the fork, change `BASE_COMMIT` in its pin file and note the fork tag beside it.
+- To add a base, add its pin file and add the base to the `image-ap-worker` matrix in `.gitlab-ci.yml`.
+
+CI pushes these `ap-worker` tags for each base:
+
+| Tag | Pushed from |
+|---|---|
+| `sha-<short sha>-<base>` | every branch |
+| `<base>` | `main` |
+| `<base>-dev` | `ionium-dev` |
+
+The tags that carry no base (`sha-<short sha>`, `latest`, `dev`) currently point at the 0.6.7 build.
+
+## How the bases differ
+
+A YAML can be valid on one base and not on another, and not only because the worlds changed.
+
+| | 0.6.7 | 0.6.8 |
+|---|---|---|
+| A YAML's `requires:` block | Not checked. | Enforced. The YAML is rejected if `requires: version` is newer than 0.6.8, or if `requires: game: <Game>` asks for a newer world than the one the room uses. |
+| A YAML's `quantity:` key | Ignored. | Rejected unless it is 1, because a room counts one player per YAML. |
+| Core worlds | Includes Donkey Kong Country 3. | Donkey Kong Country 3 is gone; Gauntlet Legends is new. |
+| Fork patches | Generation and hosting. | Generation only. |
+
+The world version that `requires: game` is compared against comes from the apworld's own `archipelago.json`, not from the index. A core world with no manifest counts as 0.0.0, which is also what Archipelago's own templates assume for it.
+
+Templates written by Archipelago always carry `requires: version` set to the version that wrote them, so a YAML from a newer Archipelago than the room's base is rejected on 0.6.8 and later.
+
 # Running apdiff-viewer standalone
 
 `apdiff-viewer` renders side-by-side diffs of `.apworld` zip contents for PR reviewers. It ships as a separate service with its own postgres and a host directory for the apworld blob store, so it deploys independently of the lobby. Source under [apdiff-viewer/](apdiff-viewer/).

@@ -1,7 +1,7 @@
 from opentelemetry import trace
 
 from Generate import roll_settings, PlandoOptions
-from Utils import parse_yamls
+from Utils import parse_yamls, version_tuple
 from Options import get_option_groups, OptionDict
 from worlds.AutoWorld import AutoWorldRegister, call_all, World
 from worlds.generic.Rules import exclusion_rules, locality_rules
@@ -17,6 +17,10 @@ import sentry_sdk
 
 
 tracer = trace.get_tracer("yaml-checker")
+
+# Archipelago 0.6.8 added a `quantity` key that turns one YAML into several players. Older
+# versions ignore the key.
+HAS_QUANTITY = version_tuple >= (0, 6, 8)
 
 class YamlChecker:
     def __init__(self, ap_handler):
@@ -41,6 +45,13 @@ class YamlChecker:
                 return {"error": "This doesn't look like an archipelago YAML? Missing game"}
             if 'name' not in yaml:
                 return {"error": "This doesn't look like an archipelago YAML? Missing player"}
+
+            # `quantity` is handled by Generate.main, which this check never goes through, and
+            # the generator runs with `allow_quantity` off. Without this a YAML asking for more
+            # than one player would validate and then fail the whole room's generation.
+            quantity = yaml.get('quantity', 1)
+            if HAS_QUANTITY and (not isinstance(quantity, int) or quantity != 1):
+                return {"error": "The `quantity` option isn't supported here, each YAML is one player. Remove it or set it to 1"}
 
             game = yaml['game']
             name = yaml['name']
