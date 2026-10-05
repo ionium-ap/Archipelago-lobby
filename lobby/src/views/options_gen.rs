@@ -300,7 +300,7 @@ impl OptionsTpl<'_> {
 }
 
 /// The Archipelago version an options page or API call is about: the one its `base`
-/// parameter names, which the index has to describe, or the default one without it.
+/// parameter names, which has to be on offer here, or the default one without it.
 pub(crate) async fn requested_base(
     index_manager: &IndexManager,
     base: Option<&str>,
@@ -310,8 +310,8 @@ pub(crate) async fn requested_base(
     };
     let base =
         Version::from_str(base).map_err(|_| anyhow!("{base:?} isn't an Archipelago version"))?;
-    if !index_manager.describes(&base).await {
-        return Err(anyhow!("The index doesn't describe Archipelago {base}"));
+    if !index_manager.offers(&base).await {
+        return Err(anyhow!("This lobby doesn't offer Archipelago {base}"));
     }
 
     Ok(base)
@@ -413,22 +413,21 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
         let options_gen_queue = rocket.state::<OptionsGenQueue>().unwrap();
         let options_cache = rocket.state::<OptionsCache>().unwrap();
 
-        let base = index_manager.default_base().await;
-        let worlds: Vec<_> = {
-            let index = index_manager.default_index().await;
-            index
-                .worlds
-                .iter()
-                .filter_map(|(apworld_name, world)| {
-                    let latest_version = world.versions.keys().max()?;
-                    Some((apworld_name.clone(), latest_version.clone()))
-                })
-                .collect()
-        };
+        // The latest release of every world, for every base on offer
+        let mut worlds = Vec::new();
+        for base in index_manager.offered_bases().await {
+            let Ok(index) = index_manager.index_for(&base).await else {
+                continue;
+            };
+            worlds.extend(index.worlds.iter().filter_map(|(apworld_name, world)| {
+                let latest_version = world.versions.keys().max()?;
+                Some((base.clone(), apworld_name.clone(), latest_version.clone()))
+            }));
+        }
 
         tracing::info!("Enqueuing options preload for {} worlds", worlds.len());
 
-        for (apworld_name, version) in worlds {
+        for (base, apworld_name, version) in worlds {
             // Every lobby process preloads on startup, and they all share the cache
             if matches!(
                 options_cache.contains(&base, &apworld_name, &version).await,

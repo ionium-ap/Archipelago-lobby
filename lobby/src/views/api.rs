@@ -413,7 +413,7 @@ pub struct GameInfo {
     game_name: String,
 }
 
-/// `base` in the two routes below is an Archipelago version the index describes. Without it
+/// `base` in the two routes below is an Archipelago version this lobby offers. Without it
 /// they answer for the default one. A room's is in its `ap_version`.
 async fn api_base(index_manager: &IndexManager, base: Option<&str>) -> ApiResult<semver::Version> {
     super::options_gen::requested_base(index_manager, base)

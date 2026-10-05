@@ -55,6 +55,147 @@ impl IndexSource {
     }
 }
 
+/// Which of the Archipelago versions the index describes this installation offers: the bases
+/// a room can be made on and the options pages can be asked for. An operator enables a base
+/// when workers for it are running; the index describing it isn't enough.
+///
+/// A base can be enabled before the index describes it. It is offered from the moment the
+/// index does.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BaseConfig {
+    /// `AP_BASES`. `None` offers the index's own `archipelago_version` and nothing else, which
+    /// is what a lobby did before it could be configured.
+    enabled: Option<Vec<Version>>,
+    /// `AP_DEFAULT_BASE`. `None` is the newest base on offer.
+    default: Option<Version>,
+}
+
+impl BaseConfig {
+    pub fn from_env() -> Result<Self> {
+        let read = |name: &str| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => bail!("{name} must be valid UTF-8"),
+        };
+
+        Self::parse(
+            read("AP_BASES")?.as_deref(),
+            read("AP_DEFAULT_BASE")?.as_deref(),
+        )
+    }
+
+    /// `ap_bases` is a comma separated list of versions, `ap_default_base` one of them. Both
+    /// are optional, and an empty value is the same as none.
+    pub fn parse(ap_bases: Option<&str>, ap_default_base: Option<&str>) -> Result<Self> {
+        let parse_version = |name: &str, value: &str| {
+            Version::parse(value)
+                .with_context(|| format!("{name}: {value:?} isn't an Archipelago version"))
+        };
+
+        let enabled = match ap_bases.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(ap_bases) => {
+                let mut enabled = Vec::new();
+                for base in ap_bases.split(',').map(str::trim) {
+                    let base = parse_version("AP_BASES", base)?;
+                    if !enabled.contains(&base) {
+                        enabled.push(base);
+                    }
+                }
+                Some(enabled)
+            }
+            None => None,
+        };
+
+        let default = ap_default_base
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| parse_version("AP_DEFAULT_BASE", value))
+            .transpose()?;
+        if let (Some(enabled), Some(default)) = (&enabled, &default) {
+            if !enabled.contains(default) {
+                bail!("AP_DEFAULT_BASE is {default}, which isn't one of AP_BASES");
+            }
+        }
+
+        Ok(Self { enabled, default })
+    }
+
+    /// The bases on offer with this index, newest first
+    fn offered(&self, index: &IndexSet) -> Vec<Version> {
+        let mut offered: Vec<Version> = match &self.enabled {
+            Some(enabled) => enabled
+                .iter()
+                .filter(|base| index.get(base).is_some())
+                .cloned()
+                .collect(),
+            None => vec![index.legacy_base.clone()],
+        };
+        offered.sort_by(|a, b| b.cmp(a));
+
+        offered
+    }
+
+    /// The base of whatever doesn't name one. When nothing is on offer, which takes a
+    /// configuration that names no base of the index, it is the index's own version.
+    fn default_base(&self, index: &IndexSet) -> Version {
+        let offered = self.offered(index);
+        match &self.default {
+            Some(default) if offered.contains(default) => default.clone(),
+            _ => offered
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| index.legacy_base.clone()),
+        }
+    }
+
+    /// What can't be told before the index is known, and what an operator should hear about
+    fn check(&self, index: &IndexSet) -> Result<()> {
+        if let (None, Some(default)) = (&self.enabled, &self.default) {
+            if default != &index.legacy_base {
+                bail!(
+                    "AP_DEFAULT_BASE is {default}, but without AP_BASES only Archipelago {} is offered",
+                    index.legacy_base
+                );
+            }
+        }
+
+        for base in self.enabled.iter().flatten() {
+            if index.get(base).is_none() {
+                tracing::warn!(
+                    "AP_BASES has Archipelago {base}, which the index doesn't describe. It isn't offered until it does."
+                );
+            }
+        }
+        if self.offered(index).is_empty() {
+            tracing::error!("The index describes none of the Archipelago versions in AP_BASES");
+        }
+
+        Ok(())
+    }
+
+    /// One line for the log
+    fn describe(&self, index: &IndexSet) -> String {
+        let default = self.default_base(index);
+        let offered: Vec<String> = self
+            .offered(index)
+            .into_iter()
+            .map(|base| {
+                if base == default {
+                    format!("{base} (default)")
+                } else {
+                    base.to_string()
+                }
+            })
+            .collect();
+
+        if offered.is_empty() {
+            "offering no Archipelago version".to_string()
+        } else {
+            format!("offering Archipelago {}", offered.join(", "))
+        }
+    }
+}
+
 /// The index as it is loaded, and the commit of its repository it was read from
 struct Loaded {
     index: IndexSet,
@@ -76,6 +217,7 @@ pub struct IndexManager {
     /// One load at a time: they all work in the same checkout
     load_lock: Arc<tokio::sync::Mutex<()>>,
     source: IndexSource,
+    bases: BaseConfig,
     pub apworlds_path: PathBuf,
     redis_pool: RedisPool,
     redis_client: redis::Client,
@@ -85,16 +227,26 @@ pub struct IndexManager {
 
 impl IndexManager {
     /// Fetches the index repository and reads the index, without downloading any apworld
-    pub fn new(source: IndexSource, redis_pool: RedisPool, valkey_url: &str) -> Result<Self> {
+    pub fn new(
+        source: IndexSource,
+        bases: BaseConfig,
+        redis_pool: RedisPool,
+        valkey_url: &str,
+    ) -> Result<Self> {
         let (commit, _) = fetch_and_reset(&source, None)?;
         let index = IndexSet::new(&source.index_path.join("index.toml"))?;
-        tracing::info!("Read the index at commit {commit}");
+        bases.check(&index)?;
+        tracing::info!(
+            "Read the index at commit {commit}, {}",
+            bases.describe(&index)
+        );
 
         let manager = Self {
             loaded: Arc::new(RwLock::new(Loaded { index, commit })),
             load_lock: Arc::new(tokio::sync::Mutex::new(())),
             apworlds_path: source.apworlds_path.clone(),
             source,
+            bases,
             redis_pool,
             redis_client: redis::Client::open(valkey_url)?,
             seen_announcement: Arc::new(Mutex::new(None)),
@@ -120,11 +272,12 @@ impl IndexManager {
         new_index
             .refresh_into(&self.apworlds_path, false, None)
             .await?;
+        let offer = self.bases.describe(&new_index);
         *self.loaded.write().await = Loaded {
             index: new_index,
             commit: commit.clone(),
         };
-        tracing::info!("Loaded the index at commit {commit}");
+        tracing::info!("Loaded the index at commit {commit}, {offer}");
 
         Ok(commit)
     }
@@ -232,36 +385,50 @@ impl IndexManager {
             .map_err(|_| anyhow!("The index doesn't describe Archipelago {base}"))
     }
 
-    /// Whether `index_for` has something for `base`
-    pub async fn describes(&self, base: &Version) -> bool {
-        self.loaded.read().await.index.get(base).is_some()
-    }
-
     /// `archipelago_version` in the index: the base every room was on before rooms had one,
-    /// and the one whose jobs keep the queues' original keys.
+    /// and the one whose jobs keep the queues' original keys. Not necessarily on offer.
     pub async fn legacy_base(&self) -> Version {
         self.loaded.read().await.index.legacy_base.clone()
     }
 
-    /// The base of a room that doesn't ask for one, and of everything that isn't about a room.
-    /// For now that is the legacy base, the only one rooms can be on.
-    pub async fn default_base(&self) -> Version {
-        self.legacy_base().await
+    /// The bases a room can be made on and the options pages can be asked for, newest first:
+    /// the ones this installation enables that the index describes. A room that is already
+    /// on another base keeps working as far as `index_for` goes, but there is probably no
+    /// worker for it.
+    pub async fn offered_bases(&self) -> Vec<Version> {
+        self.bases.offered(&self.loaded.read().await.index)
     }
 
-    /// `wanted` if the index describes it, the default base otherwise. For a base that was
-    /// only ever a preference, such as a room template's.
+    pub async fn offers(&self, base: &Version) -> bool {
+        self.offered_bases().await.contains(base)
+    }
+
+    /// The base of a room that doesn't ask for one, and of everything that isn't about a
+    /// room: the configured default, or the newest base on offer.
+    pub async fn default_base(&self) -> Version {
+        self.bases.default_base(&self.loaded.read().await.index)
+    }
+
+    /// `wanted` if it is on offer, the default base otherwise. For a base that was only ever
+    /// a preference, such as a room template's.
     pub async fn base_or_default(&self, wanted: Option<&Version>) -> Version {
         let index = &self.loaded.read().await.index;
         match wanted {
-            Some(wanted) if index.get(wanted).is_some() => wanted.clone(),
-            _ => index.legacy_base.clone(),
+            Some(wanted) if self.bases.offered(index).contains(wanted) => wanted.clone(),
+            _ => self.bases.default_base(index),
         }
     }
 
     /// `index_for` the default base
     pub async fn default_index(&self) -> RwLockReadGuard<'_, Index> {
-        RwLockReadGuard::map(self.loaded.read().await, |loaded| loaded.index.legacy())
+        RwLockReadGuard::map(self.loaded.read().await, |loaded| {
+            let default = self.bases.default_base(&loaded.index);
+            // The default base is one the index describes, or its own version
+            loaded
+                .index
+                .get(&default)
+                .unwrap_or_else(|| loaded.index.legacy())
+        })
     }
 
     /// The whole index as it is now, to compare with after an update
@@ -482,6 +649,11 @@ mod tests {
             )
             .unwrap();
 
+            self.commit(apworld)
+        }
+
+        /// Commits whatever changed in the index repository. Returns the commit.
+        fn commit(&self, message: &str) -> String {
             let repo = Repository::open(self.origin()).unwrap();
             let mut index = repo.index().unwrap();
             index
@@ -493,13 +665,18 @@ mod tests {
             let parent = repo.head().ok().map(|head| head.peel_to_commit().unwrap());
             let parents: Vec<&git2::Commit> = parent.iter().collect();
 
-            repo.commit(Some("HEAD"), &author, &author, apworld, &tree, &parents)
+            repo.commit(Some("HEAD"), &author, &author, message, &tree, &parents)
                 .unwrap()
                 .to_string()
         }
 
         /// A lobby process that has read the index and done nothing else yet
         fn read(&self, name: &str) -> IndexManager {
+            self.configured(name, BaseConfig::default()).unwrap()
+        }
+
+        /// `read`, for an installation that sets `AP_BASES` or `AP_DEFAULT_BASE`
+        fn configured(&self, name: &str, bases: BaseConfig) -> Result<IndexManager> {
             let source = IndexSource {
                 repo_url: self.origin().to_string_lossy().to_string(),
                 repo_branch: "main".to_string(),
@@ -507,7 +684,17 @@ mod tests {
                 apworlds_path: self.dir.path().join("apworlds"),
             };
 
-            IndexManager::new(source, redis_pool(&self.valkey), &self.valkey.url()).unwrap()
+            IndexManager::new(source, bases, redis_pool(&self.valkey), &self.valkey.url())
+        }
+
+        /// Has the index describe one more Archipelago version. Returns the commit.
+        fn declare_base(&self, base: &str) -> String {
+            let index_toml = self.origin().join("index.toml");
+            let mut content = std::fs::read_to_string(&index_toml).unwrap();
+            content.push_str(&format!("\n[bases.\"{base}\"]\n"));
+            std::fs::write(index_toml, content).unwrap();
+
+            self.commit(&format!("declare {base}"))
         }
 
         /// A lobby process as it is once it has started
@@ -533,6 +720,151 @@ mod tests {
             .keys()
             .cloned()
             .collect()
+    }
+
+    fn bases(ap_bases: Option<&str>, ap_default_base: Option<&str>) -> BaseConfig {
+        BaseConfig::parse(ap_bases, ap_default_base).unwrap()
+    }
+
+    fn versions(versions: &[&str]) -> Vec<Version> {
+        versions.iter().map(|v| v.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn test_base_config_is_read_from_its_two_values() {
+        assert_eq!(bases(None, None), BaseConfig::default());
+        // Set to nothing is not set
+        assert_eq!(bases(Some(""), Some(" ")), BaseConfig::default());
+
+        let config = bases(Some("0.6.8, 0.6.7,0.6.8"), Some("0.6.7"));
+        assert_eq!(config.enabled, Some(versions(&["0.6.8", "0.6.7"])));
+        assert_eq!(config.default, Some("0.6.7".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_base_config_refuses_what_it_cannot_mean() {
+        let error = BaseConfig::parse(Some("0.6.8,latest"), None).unwrap_err();
+        assert!(format!("{error:#}").contains("AP_BASES: \"latest\""));
+
+        let error = BaseConfig::parse(Some("0.6.8,"), None).unwrap_err();
+        assert!(format!("{error:#}").contains("AP_BASES: \"\""));
+
+        let error = BaseConfig::parse(None, Some("newest")).unwrap_err();
+        assert!(format!("{error:#}").contains("AP_DEFAULT_BASE: \"newest\""));
+
+        let error = BaseConfig::parse(Some("0.6.8,0.6.7"), Some("0.6.9")).unwrap_err();
+        assert!(format!("{error:#}").contains("isn't one of AP_BASES"));
+    }
+
+    #[rocket::async_test]
+    async fn test_unconfigured_lobby_offers_the_index_version_only() {
+        let fixture = Fixture::new();
+        fixture.declare_base("0.6.8");
+        let process = fixture.process("process").await;
+
+        assert_eq!(process.offered_bases().await, versions(&["0.6.7"]));
+        assert_eq!(process.default_base().await, Version::new(0, 6, 7));
+        assert!(!process.offers(&Version::new(0, 6, 8)).await);
+        // What it doesn't offer is still there for a room that is on it
+        assert!(process.index_for(&Version::new(0, 6, 8)).await.is_ok());
+    }
+
+    #[rocket::async_test]
+    async fn test_enabled_base_is_offered_once_the_index_describes_it() {
+        let fixture = Fixture::new();
+        let process = fixture
+            .configured("process", bases(Some("0.6.8,0.6.7"), None))
+            .unwrap();
+
+        // Enabled ahead of the index
+        assert_eq!(process.offered_bases().await, versions(&["0.6.7"]));
+        assert_eq!(process.default_base().await, Version::new(0, 6, 7));
+
+        fixture.declare_base("0.6.8");
+        process.update().await.unwrap();
+
+        // Newest first, and the newest is the default
+        assert_eq!(process.offered_bases().await, versions(&["0.6.8", "0.6.7"]));
+        assert_eq!(process.default_base().await, Version::new(0, 6, 8));
+        assert_eq!(
+            process.default_index().await.archipelago_version,
+            Version::new(0, 6, 8)
+        );
+    }
+
+    #[rocket::async_test]
+    async fn test_configured_default_base_wins_over_the_newest() {
+        let fixture = Fixture::new();
+        fixture.declare_base("0.6.8");
+        let process = fixture
+            .configured("process", bases(Some("0.6.8,0.6.7"), Some("0.6.7")))
+            .unwrap();
+
+        assert_eq!(process.offered_bases().await, versions(&["0.6.8", "0.6.7"]));
+        assert_eq!(process.default_base().await, Version::new(0, 6, 7));
+        assert_eq!(
+            process.default_index().await.archipelago_version,
+            Version::new(0, 6, 7)
+        );
+    }
+
+    #[rocket::async_test]
+    async fn test_index_version_can_be_left_out() {
+        let fixture = Fixture::new();
+        let process = fixture
+            .configured("process", bases(Some("0.6.8"), None))
+            .unwrap();
+
+        // Nothing it enables exists yet. What has no base falls back on the index's version.
+        assert!(process.offered_bases().await.is_empty());
+        assert_eq!(process.default_base().await, Version::new(0, 6, 7));
+
+        fixture.declare_base("0.6.8");
+        process.update().await.unwrap();
+
+        assert_eq!(process.offered_bases().await, versions(&["0.6.8"]));
+        assert_eq!(process.default_base().await, Version::new(0, 6, 8));
+        assert!(!process.offers(&Version::new(0, 6, 7)).await);
+        // The queues' original keys stay with the index's version all the same
+        assert_eq!(process.legacy_base().await, Version::new(0, 6, 7));
+    }
+
+    #[rocket::async_test]
+    async fn test_default_base_that_is_not_offered_stops_the_lobby() {
+        let fixture = Fixture::new();
+        fixture.declare_base("0.6.8");
+
+        let error = fixture
+            .configured("process", bases(None, Some("0.6.8")))
+            .err()
+            .expect("Only 0.6.7 is offered without AP_BASES");
+        assert!(format!("{error:#}").contains("without AP_BASES"));
+
+        // Naming the only base there is changes nothing
+        assert!(fixture
+            .configured("other", bases(None, Some("0.6.7")))
+            .is_ok());
+    }
+
+    #[rocket::async_test]
+    async fn test_preferred_base_is_kept_only_if_it_is_offered() {
+        let fixture = Fixture::new();
+        fixture.declare_base("0.6.8");
+        fixture.declare_base("0.6.9");
+        let process = fixture
+            .configured("process", bases(Some("0.6.8,0.6.7"), None))
+            .unwrap();
+        let (old, new, newest) = (
+            Version::new(0, 6, 7),
+            Version::new(0, 6, 8),
+            Version::new(0, 6, 9),
+        );
+
+        assert_eq!(process.base_or_default(Some(&old)).await, old);
+        assert_eq!(process.base_or_default(Some(&new)).await, new);
+        assert_eq!(process.base_or_default(None).await, new);
+        // The index describes it, this lobby doesn't offer it
+        assert_eq!(process.base_or_default(Some(&newest)).await, new);
     }
 
     #[rocket::async_test]

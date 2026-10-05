@@ -27,7 +27,7 @@ use rocket_oauth2::OAuth2;
 use rocket_prometheus::PrometheusMetrics;
 use wq::rocket_routes::QueueTokens;
 
-use crate::index_manager::{IndexManager, IndexSource};
+use crate::index_manager::{BaseConfig, IndexManager, IndexSource};
 use crate::jobs::{
     get_generation_callback, get_options_gen_callback, get_yaml_validation_callback,
     GenerationOutDir, GenerationQueue, OptionsGenQueue, YamlValidationQueue,
@@ -275,8 +275,12 @@ pub async fn main() -> crate::error::Result<()> {
         .register(Box::new(common::db::QUERY_HISTOGRAM.clone()))
         .expect("Failed to register query histogram");
 
-    let index_manager =
-        IndexManager::new(IndexSource::from_env(), redis_pool.clone(), &valkey_url)?;
+    let index_manager = IndexManager::new(
+        IndexSource::from_env(),
+        BaseConfig::from_env()?,
+        redis_pool.clone(),
+        &valkey_url,
+    )?;
     if std::env::var("SKIP_APWORLDS_UPDATE").is_err() {
         index_manager.update().await?;
     }

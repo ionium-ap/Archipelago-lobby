@@ -61,6 +61,13 @@ services:
       GENERATION_OUTPUT_DIR: "/builds/gen-output"
       ROCKET_ADDRESS: "0.0.0.0"
       ADMIN_ROOMS_ONLY: false
+      # The Archipelago versions to offer. Without it only the index's own version is.
+      # Each version needs its own three workers: the ones right below are for 0.6.7,
+      # the ones at the end of this file are for 0.6.8 and start with
+      # `docker compose --profile ap-0.6.8 up -d`.
+      # AP_BASES: "0.6.8,0.6.7"
+      # What a new room gets when nobody chooses. Without it, the newest of AP_BASES.
+      # AP_DEFAULT_BASE: "0.6.8"
     working_dir: /builds/worker/checkout
     command: sh -c "watchexec -w lobby -w Cargo.toml -w Cargo.lock -w Rocket.toml -w apwm -w wq -r cargo run"
     user: "${USER_ID}:${GID}"
@@ -130,6 +137,78 @@ services:
       args:
         SRC: /
         DOCKER_SRC: taskcluster/docker/ap-worker/
+    volumes:
+      - ./ap-worker:/ap/ap-worker/
+      - ./tmp/apworlds_index:/ap/index
+    working_dir: /ap/archipelago
+    user: "${USER_ID}:${GID}"
+    environment:
+      LOBBY_ROOT_URL: http://lobby:8000
+      OPTIONS_GEN_QUEUE_TOKEN: changeme
+    command: watchexec -w /ap/ap-worker -r /ap/archipelago/.venv/bin/python3 options_gen_wq.py /ap/supported_worlds /ap/index/worlds/
+    depends_on:
+      lobby:
+        condition: service_healthy
+
+  # The same three workers for Archipelago 0.6.8. They only differ from the ones above by the
+  # AP_BASE build argument, and they only start with `--profile ap-0.6.8`. The lobby gives
+  # them nothing to do unless its AP_BASES has 0.6.8.
+  yaml-checker-0.6.8:
+    profiles: ["ap-0.6.8"]
+    build:
+      dockerfile: taskcluster/docker/ap-worker/Dockerfile
+      context: .
+      args:
+        SRC: /
+        DOCKER_SRC: taskcluster/docker/ap-worker/
+        AP_BASE: "0.6.8"
+    volumes:
+      - ./ap-worker:/ap/ap-worker/
+      - ./tmp/apworlds_index:/ap/index
+    working_dir: /ap/archipelago
+    user: "${USER_ID}:${GID}"
+    environment:
+      LOBBY_ROOT_URL: http://lobby:8000
+      YAML_VALIDATION_QUEUE_TOKEN: changeme
+    command: watchexec -w /ap/ap-worker -r /ap/archipelago/.venv/bin/python3 check_wq.py /ap/supported_worlds /ap/index/worlds/
+    depends_on:
+      lobby:
+        condition: service_healthy
+
+  generator-0.6.8:
+    profiles: ["ap-0.6.8"]
+    build:
+      dockerfile: taskcluster/docker/ap-worker/Dockerfile
+      context: .
+      args:
+        SRC: /
+        DOCKER_SRC: taskcluster/docker/ap-worker/
+        AP_BASE: "0.6.8"
+    volumes:
+      - ./ap-worker:/ap/ap-worker/
+      - ./tmp/apworlds_index:/ap/index
+      - ./tmp/gen-output:/ap/builds-output
+    working_dir: /ap/archipelago
+    user: "${USER_ID}:${GID}"
+    environment:
+      LOBBY_ROOT_URL: http://lobby:8000
+      GENERATION_QUEUE_TOKEN: changeme
+      GENERATOR_OUTPUT_DIR: /ap/builds-output
+      LOBBY_API_KEY: changeme
+    command: watchexec -w /ap/ap-worker -r /ap/archipelago/.venv/bin/python3 gen_wq.py /ap/supported_worlds /ap/index/worlds/
+    depends_on:
+      lobby:
+        condition: service_healthy
+
+  option-generator-0.6.8:
+    profiles: ["ap-0.6.8"]
+    build:
+      dockerfile: taskcluster/docker/ap-worker/Dockerfile
+      context: .
+      args:
+        SRC: /
+        DOCKER_SRC: taskcluster/docker/ap-worker/
+        AP_BASE: "0.6.8"
     volumes:
       - ./ap-worker:/ap/ap-worker/
       - ./tmp/apworlds_index:/ap/index
