@@ -1,6 +1,8 @@
 ARG PYTHON_VERSION=3.12
 ARG SRC=topsrcdir
 ARG DOCKER_SRC=/
+# The Archipelago base to build a worker for. Each one has a pin file in bases/
+ARG AP_BASE=0.6.7
 
 
 FROM docker.io/library/alpine:latest AS enemizer
@@ -11,12 +13,9 @@ RUN apk update && apk add unzip && unzip Enemizer.zip -d /Enemizer
 FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-trixie AS builder
 ARG SRC
 ARG DOCKER_SRC
+ARG AP_BASE
 
 ENV UV_PYTHON_DOWNLOADS=0
-
-ENV BASE_COMMIT=f04b3a3457efbca6fde29beaf70c7f7f0016cdc8
-ENV FUZZER_COMMIT=17227d793cc1088ae9be5fe97421e73bb683efdf
-ENV LINTER_COMMIT=52cfa67f7e40ebe15bf6bff6d17adb6409ad97dc
 
 WORKDIR /ap
 
@@ -25,8 +24,9 @@ WORKDIR /ap
 COPY ${SRC}/ap-worker /ap/ap-worker
 COPY ${DOCKER_SRC}/prepare_worlds.sh /ap/prepare_worlds.sh
 COPY ${DOCKER_SRC}/setup.sh /ap/setup.sh
+COPY ${DOCKER_SRC}/bases/${AP_BASE}.env /ap/base.env
 
-RUN sh /ap/setup.sh ${BASE_COMMIT} ${FUZZER_COMMIT} ${LINTER_COMMIT} && rm /ap/setup.sh
+RUN sh /ap/setup.sh /ap/base.env ${AP_BASE} && rm /ap/setup.sh /ap/base.env
 
 FROM docker.io/library/python:${PYTHON_VERSION}-slim-trixie
 ARG DOCKER_SRC

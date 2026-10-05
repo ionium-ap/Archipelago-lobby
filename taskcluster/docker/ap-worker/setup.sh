@@ -2,9 +2,9 @@
 
 set -ex
 
-BASE_COMMIT=$1
-FUZZER_COMMIT=$2
-LINTER_COMMIT=$3
+# The pin file sets BASE_COMMIT, FUZZER_COMMIT and LINTER_COMMIT
+. "$1"
+AP_BASE=$2
 
 apt update && apt -y install git zip curl clang python3-dev python3-tk libpq5
 
@@ -15,6 +15,13 @@ git init
 git remote add origin https://github.com/ionium-ap/Archipelago.git
 git fetch origin ${BASE_COMMIT} --depth 1
 git reset --hard ${BASE_COMMIT}
+
+# The lobby routes jobs by this version and core worlds are named after it
+PINNED_VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' Utils.py)
+if [ "${PINNED_VERSION}" != "${AP_BASE}" ]; then
+    echo "bases/${AP_BASE}.env pins Archipelago '${PINNED_VERSION}', expected '${AP_BASE}'"
+    exit 1
+fi
 
 uv venv
 uv export --project=/ap/ap-worker/pyproject.toml --locked | uv pip install -r -

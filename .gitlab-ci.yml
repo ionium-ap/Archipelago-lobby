@@ -21,6 +21,9 @@
 # moving tags are branch-gated: main pushes :latest, ionium-dev pushes :dev,
 # and every other branch pushes no moving tag at all.
 #
+# ap-worker is built once per Archipelago base, so its tags also carry the
+# base. See the image-ap-worker job.
+#
 # Every job's `changes:` filter includes .gitlab-ci.yml, the build recipe
 # itself. Otherwise a fix to this file can only be deployed via a manual
 # web-triggered run.
@@ -241,8 +244,19 @@ image-community-ap-tools:
 # ap-worker is built from the repo root because its Dockerfile COPYs
 # both ./ap-worker (the Python harness) and the Dockerfile-adjacent
 # setup.sh / prepare_worlds.sh / host.yaml.
+#
+# One image per Archipelago base. Each base in the matrix needs a pin file,
+# taskcluster/docker/ap-worker/bases/<base>.env. Tags, per base:
+#   :sha-<short sha>-<base>   every branch
+#   :<base>                   main
+#   :<base>-dev               ionium-dev
+# UNSUFFIXED_BASE also keeps the tags that carry no base: :sha-<short sha>
+# on every branch, plus :latest or :dev.
 image-ap-worker:
   <<: *buildah-build
+  parallel:
+    matrix:
+      - AP_BASE: ["0.6.7", "0.6.8"]
   rules:
     - if: '$CI_COMMIT_BRANCH'
       changes:
@@ -252,10 +266,28 @@ image-ap-worker:
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-worker"
+    - UNSUFFIXED_BASE="0.6.7"
+    - BASE_TAG="sha-$CI_COMMIT_SHORT_SHA-$AP_BASE"
     - buildah build
         --build-arg SRC=.
         --build-arg DOCKER_SRC=taskcluster/docker/ap-worker
-        -t "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        --build-arg AP_BASE="$AP_BASE"
+        -t "$IMAGE:$BASE_TAG"
         -f taskcluster/docker/ap-worker/Dockerfile
         .
-    - push_image "$IMAGE"
+    - buildah push "$IMAGE:$BASE_TAG"
+    - |
+      case "$CI_COMMIT_BRANCH" in
+        main)        VERSION_TAG="$AP_BASE" ;;
+        ionium-dev)  VERSION_TAG="$AP_BASE-dev" ;;
+        *)           VERSION_TAG= ;;
+      esac
+      if [ -n "$VERSION_TAG" ]; then
+        buildah tag "$IMAGE:$BASE_TAG" "$IMAGE:$VERSION_TAG"
+        buildah push "$IMAGE:$VERSION_TAG"
+      fi
+    - |
+      if [ "$AP_BASE" = "$UNSUFFIXED_BASE" ]; then
+        buildah tag "$IMAGE:$BASE_TAG" "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
+        push_image "$IMAGE"
+      fi
