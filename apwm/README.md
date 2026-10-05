@@ -86,6 +86,52 @@ Additionally, `default_version` can also be:
  - `"latest_supported"`: Uses the latest supported version. Only valid for supported worlds.
  - `"disabled"`: Disables the world by default.
 
+## The `apwm` tool
+
+Built with the `cli` feature. Every subcommand takes the directory holding `index.toml` as `-i`.
+
+| Subcommand | What it does |
+|---|---|
+| `update -i <index>` | Downloads what `index.lock` doesn't know yet and rewrites the lock. Covers the releases of every base. |
+| `download -i <index> -d <dir>` | Downloads every release of every base, or one with `-p <apworld>:<version>`, or the added ones of a `changes.json` with `--from-changes`. |
+| `changes -i <index> -f <git remote> [-r <ref>] -o <dir>` | Compares the index with the one at that remote and writes `changes.json` and the added apworlds. |
+| `install -i <index> -a <apworlds dir> -d <dir> [--base <version>]` | Copies the latest release of each world for a base, the legacy one by default. |
+| `lint -i <index>` | Reports what would break the lobbies reading this index. Exits with 1 on any error. |
+
+### `changes.json`
+
+For each world that changed, `added_versions` and `removed_versions` list the versions that
+became available, or stopped being available, on at least one base. `added_on` and
+`removed_from` say on which bases, per version. `checksums` holds the hash of each added
+version, or `"supported"` for a core world.
+
+`bases` lists the bases of the index, and `added_bases` the ones it didn't declare before.
+Declaring a base changes no world by itself: the previous index is compared as if it had always
+had that base, so only real differences show up, such as a world entering core on it.
+
+### `lint`
+
+An index that doesn't parse is reported as such. On one that does, the errors are:
+
+- a `[versions]` entry with more than one key, or with a key other than `url` or `local`;
+- a release in `[versions]` that `[releases]` says can't run on the legacy base;
+- a world with nothing in `[versions]` that is neither `supported` nor `disabled` at the top
+  level;
+- a release whose `min_ap_version` is above its `max_ap_version`;
+- a default version that a base doesn't have, or `latest_supported` on a world that isn't
+  supported on a base;
+- a key that isn't known, in `index.toml`, in a world, in a `[releases]` entry or in a `[base]`
+  table. Unknown keys are ignored when parsing, so a misspelled constraint would otherwise mean
+  "every base".
+
+And the warnings: a `[versions]` entry that isn't a table, a release that the legacy base could
+run but that is only in `[releases]`, a `[releases]` entry that changes nothing, a `[base]` table
+that matches no declared base, and a `[bases]` table that leaves out the legacy base.
+
+It can't tell whether a release really runs on the bases it claims, or whether a world marked
+`supported` is in fact a core world of the legacy base. Those need the release to be loaded on
+each base.
+
 ## Several Archipelago versions
 
 An index can describe more than one Archipelago version at once. Each one is called a base, and
@@ -95,6 +141,12 @@ list of releases. `IndexSet` parses the index and holds one `Index` per base.
 Everything in this section is ignored by lobbies from before this was supported. They keep
 reading `archipelago_version` and `[versions]` and nothing else, so those two describe the
 oldest base, the legacy base, and have to stay correct for it.
+
+The index's CI holds that line. Its `legacy-index` jobs run `legacy-index-guard`, a small program
+in the `Archipelago-index-ci` repository built against this crate as it was at commit `029bde7`,
+the last one before multi-base support. It reads the index the way those lobbies do and fails if
+they would not get a working view of the legacy base. That commit is pinned on purpose and must
+never follow this crate.
 
 ### Declaring bases
 

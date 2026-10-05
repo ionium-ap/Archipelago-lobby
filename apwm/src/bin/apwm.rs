@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use apwm::changes;
+use apwm::lint::Severity;
 use apwm::utils::git_clone_shallow;
 use clap::Parser;
 use semver::Version;
@@ -31,6 +32,10 @@ enum Command {
         destination: PathBuf,
         #[clap(short)]
         precise: Option<String>,
+        /// The Archipelago base to install the latest releases of. Defaults to the index's
+        /// `archipelago_version`
+        #[clap(long)]
+        base: Option<Version>,
     },
     Changes {
         #[clap(short)]
@@ -41,6 +46,11 @@ enum Command {
         from_ref: Option<String>,
         #[clap(short)]
         output: PathBuf,
+    },
+    /// Checks an index for what would break lobbies that read it. Exits with 1 on any error
+    Lint {
+        #[clap(short)]
+        index_path: PathBuf,
     },
 }
 
@@ -77,12 +87,14 @@ async fn main() -> Result<()> {
             apworlds_path,
             destination,
             precise,
+            base,
         } => {
             install(
                 &index_path,
                 &apworlds_path,
                 &destination,
                 precise.as_deref(),
+                base.as_ref(),
             )
             .await?;
         }
@@ -94,9 +106,30 @@ async fn main() -> Result<()> {
         } => {
             compute_changes(&index_path, &from, from_ref.as_deref(), &output).await?;
         }
+        Command::Lint { index_path } => {
+            if !lint(&index_path)? {
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Prints what the linter found and returns whether the index is free of errors.
+fn lint(index_path: &Path) -> Result<bool> {
+    let problems = apwm::lint::lint(&index_path.join("index.toml"))?;
+    for problem in &problems {
+        println!("{problem}");
+    }
+
+    let errors = problems
+        .iter()
+        .filter(|problem| problem.severity == Severity::Error)
+        .count();
+    println!("{errors} error(s), {} warning(s)", problems.len() - errors);
+
+    Ok(errors == 0)
 }
 
 async fn download(
@@ -106,16 +139,17 @@ async fn download(
     from_changes: Option<&Path>,
 ) -> Result<()> {
     let index_toml = index_path.join("index.toml");
-    let index = apwm::Index::new(&index_toml)?;
+    let index_set = apwm::IndexSet::new(&index_toml)?;
 
     if let Some(changes_path) = from_changes {
         let content = std::fs::read_to_string(changes_path)
             .with_context(|| format!("Reading changes file: {}", changes_path.display()))?;
         let changes_file: changes::Changes = serde_json::from_str(&content)?;
-        changes::download_from_changes(&changes_file, &index, destination).await?;
+        changes::download_from_changes(&changes_file, &index_set.all_releases(), destination)
+            .await?;
     } else {
         let target = apworld_version_from_precise(precise)?;
-        index.refresh_into(destination, false, target).await?;
+        index_set.refresh_into(destination, false, target).await?;
     }
 
     Ok(())
@@ -123,10 +157,12 @@ async fn download(
 
 async fn update(index_path: &Path) -> Result<()> {
     let index_toml = index_path.join("index.toml");
-    let index = apwm::Index::new(&index_toml)?;
+    let index_set = apwm::IndexSet::new(&index_toml)?;
     let destination = tempdir()?;
 
-    let new_lock = index.refresh_into(destination.path(), true, None).await?;
+    let new_lock = index_set
+        .refresh_into(destination.path(), true, None)
+        .await?;
 
     new_lock.write()?;
 
@@ -151,9 +187,16 @@ async fn install(
     apworlds_path: &Path,
     destination: &Path,
     precise: Option<&str>,
+    base: Option<&Version>,
 ) -> Result<()> {
     let index_toml = index_path.join("index.toml");
-    let index = apwm::Index::new(&index_toml)?;
+    let index_set = apwm::IndexSet::new(&index_toml)?;
+    let index = match base {
+        Some(base) => index_set
+            .get(base)
+            .with_context(|| format!("The index doesn't describe Archipelago {base}"))?,
+        None => index_set.legacy(),
+    };
 
     std::fs::create_dir_all(destination).context("While creating destination dir")?;
     let target = apworld_version_from_precise(precise)?;
@@ -165,9 +208,13 @@ async fn install(
             }
             target_version
         } else {
-            let Some((version, _)) = world.get_latest_release() else {
+            let Some((version, origin)) = world.get_latest_release() else {
                 continue;
             };
+            // Core worlds ship with Archipelago, there's no file to install for them
+            if origin.is_supported() {
+                continue;
+            }
             version
         };
 
@@ -196,13 +243,14 @@ async fn compute_changes(
     let new_index_toml = index_path.join("index.toml");
     let old_index_toml = old_index_dir.path().join("index.toml");
 
-    let new_index = apwm::Index::new(&new_index_toml)?;
-    let old_index = apwm::Index::new(&old_index_toml)?;
+    let new_index = apwm::IndexSet::new(&new_index_toml)?;
+    let old_index = apwm::IndexSet::new(&old_index_toml)?;
 
-    let mut result = changes::compute_changes(&old_index, &new_index);
+    let mut result = changes::compute_changes_between(&old_index, &new_index)?;
 
     std::fs::create_dir_all(output)?;
-    let checksums = changes::download_changed_apworlds(&result, &new_index, output).await?;
+    let checksums =
+        changes::download_changed_apworlds(&result, &new_index.all_releases(), output).await?;
     changes::apply_checksums(&mut result, checksums);
     changes::write_changes(&result, output)?;
 

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use apwm::changes::{compute_changes_between, Changes};
 use apwm::{Index, IndexSet, Manifest, VersionReq, WorldOrigin};
 use semver::Version;
 use tempfile::TempDir;
@@ -367,6 +368,114 @@ default_url = "https://example.invalid/world-{{version}}/world.apworld"
         parse(&dir).is_err(),
         "Unlike [versions], a [releases] entry that doesn't parse shouldn't be accepted silently"
     );
+}
+
+const CUSTOM_WORLD: &str = r#"
+name = "World"
+default_url = "https://example.invalid/world-{{version}}/world.apworld"
+
+[versions]
+"1.0.0" = {}
+"#;
+
+const CORE_WORLD: &str = r#"
+name = "Core World"
+supported = true
+"#;
+
+fn changes_between(old: &TempDir, new: &TempDir) -> Changes {
+    compute_changes_between(&parse(old).unwrap(), &parse(new).unwrap()).unwrap()
+}
+
+fn strings(versions: &[Version]) -> Vec<String> {
+    versions.iter().map(|v| v.to_string()).collect()
+}
+
+#[test]
+fn test_declaring_a_base_adds_nothing_by_itself() {
+    let single_base_index_toml = TWO_BASES_INDEX_TOML.split("[bases").next().unwrap();
+    let worlds = [("world", CUSTOM_WORLD), ("core", CORE_WORLD)];
+    let old = write_index(single_base_index_toml, &worlds);
+    let new = write_index(TWO_BASES_INDEX_TOML, &worlds);
+
+    let changes = changes_between(&old, &new);
+
+    assert!(
+        changes.worlds.is_empty(),
+        "The old index is compared as if it had always had the new base: {:#?}",
+        changes.worlds
+    );
+    assert_eq!(strings(&changes.bases), vec!["0.6.7", "0.6.8"]);
+    assert_eq!(strings(&changes.added_bases), vec!["0.6.8"]);
+}
+
+#[test]
+fn test_changes_name_the_bases_a_release_was_added_on() {
+    let old = write_index(TWO_BASES_INDEX_TOML, &[("world", CUSTOM_WORLD)]);
+    let new_world = format!(
+        "{CUSTOM_WORLD}\"1.1.0\" = {{}}\n\n[releases]\n\"2.0.0\" = {{ min_ap_version = \"0.6.8\" }}\n"
+    );
+    let new = write_index(TWO_BASES_INDEX_TOML, &[("world", &new_world)]);
+
+    let changes = changes_between(&old, &new);
+
+    let world = &changes.worlds["world"];
+    assert_eq!(strings(&world.added_versions), vec!["1.1.0", "2.0.0"]);
+    assert_eq!(
+        strings(&world.added_on[&version("1.1.0")]),
+        vec!["0.6.7", "0.6.8"]
+    );
+    assert_eq!(strings(&world.added_on[&version("2.0.0")]), vec!["0.6.8"]);
+    assert!(world.removed_versions.is_empty());
+    assert!(changes.added_bases.is_empty());
+}
+
+#[test]
+fn test_capping_a_release_removes_it_from_the_newer_base() {
+    let old = write_index(TWO_BASES_INDEX_TOML, &[("world", CUSTOM_WORLD)]);
+    let new_world = format!(
+        "{CUSTOM_WORLD}\"1.1.0\" = {{}}\n\n[releases]\n\"1.0.0\" = {{ max_ap_version = \"0.6.7\" }}\n"
+    );
+    let new = write_index(TWO_BASES_INDEX_TOML, &[("world", &new_world)]);
+
+    let changes = changes_between(&old, &new);
+
+    let world = &changes.worlds["world"];
+    assert_eq!(strings(&world.removed_versions), vec!["1.0.0"]);
+    assert_eq!(
+        strings(&world.removed_from[&version("1.0.0")]),
+        vec!["0.6.8"]
+    );
+    assert_eq!(strings(&world.added_versions), vec!["1.1.0"]);
+}
+
+#[test]
+fn test_world_entering_core_shows_up_on_that_base_only() {
+    let old = write_index(TWO_BASES_INDEX_TOML, &[("world", CUSTOM_WORLD)]);
+    let new_world = format!(
+        "{CUSTOM_WORLD}\n[releases]\n\"1.0.0\" = {{ max_ap_version = \"0.6.7\" }}\n\n[base.\">=0.6.8\"]\nsupported = true\ndefault_version = \"latest_supported\"\n"
+    );
+    let new = write_index(TWO_BASES_INDEX_TOML, &[("world", &new_world)]);
+
+    let changes = changes_between(&old, &new);
+
+    let world = &changes.worlds["world"];
+    assert_eq!(strings(&world.added_versions), vec!["0.6.8"]);
+    assert_eq!(strings(&world.added_on[&version("0.6.8")]), vec!["0.6.8"]);
+    assert_eq!(
+        strings(&world.removed_from[&version("1.0.0")]),
+        vec!["0.6.8"]
+    );
+}
+
+#[test]
+fn test_changes_from_before_bases_still_parse() {
+    let json = r#"{"worlds":{"some":{"world_name":"Some","added_versions":["0.1.0"],"removed_versions":[],"checksums":{}}}}"#;
+
+    let changes: Changes = serde_json::from_str(json).unwrap();
+
+    assert!(changes.bases.is_empty());
+    assert!(changes.worlds["some"].added_on.is_empty());
 }
 
 #[tokio::test]

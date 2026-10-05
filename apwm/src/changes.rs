@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::Index;
+use crate::{Index, IndexSet};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -16,18 +16,100 @@ pub enum Checksum {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Changes {
     pub worlds: BTreeMap<String, WorldChanges>,
+    /// The Archipelago bases the new index describes
+    #[serde(default)]
+    pub bases: Vec<Version>,
+    /// The ones among them that the old index didn't declare. Declaring a base adds nothing by
+    /// itself: the old index gets compared as if it had always had it.
+    #[serde(default)]
+    pub added_bases: Vec<Version>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorldChanges {
     pub world_name: String,
+    /// Versions that became available on at least one base
     pub added_versions: Vec<Version>,
+    /// Versions that stopped being available on at least one base
     pub removed_versions: Vec<Version>,
     pub checksums: BTreeMap<Version, Checksum>,
+    /// For each added version, the bases it became available on
+    #[serde(default)]
+    pub added_on: BTreeMap<Version, Vec<Version>>,
+    /// For each removed version, the bases it stopped being available on
+    #[serde(default)]
+    pub removed_from: BTreeMap<Version, Vec<Version>>,
 }
 
+impl WorldChanges {
+    fn on_base(
+        world_name: &str,
+        added: Vec<Version>,
+        removed: Vec<Version>,
+        base: &Version,
+    ) -> Self {
+        let on_base = |versions: &[Version]| {
+            versions
+                .iter()
+                .map(|version| (version.clone(), vec![base.clone()]))
+                .collect()
+        };
+
+        Self {
+            world_name: world_name.to_string(),
+            added_on: on_base(&added),
+            removed_from: on_base(&removed),
+            added_versions: added,
+            removed_versions: removed,
+            checksums: BTreeMap::new(),
+        }
+    }
+
+    fn merge(&mut self, other: WorldChanges) {
+        for (version, bases) in other.added_on {
+            self.added_on.entry(version).or_default().extend(bases);
+        }
+        for (version, bases) in other.removed_from {
+            self.removed_from.entry(version).or_default().extend(bases);
+        }
+        self.added_versions = self.added_on.keys().cloned().collect();
+        self.removed_versions = self.removed_from.keys().cloned().collect();
+    }
+}
+
+/// What changed between two indexes, for every base of the new one.
+pub fn compute_changes_between(old: &IndexSet, new: &IndexSet) -> Result<Changes> {
+    let mut changes = Changes {
+        worlds: BTreeMap::new(),
+        bases: new.bases().cloned().collect(),
+        added_bases: new
+            .bases()
+            .filter(|base| old.get(base).is_none())
+            .cloned()
+            .collect(),
+    };
+
+    for base in new.bases() {
+        let old_view = old.view_for_base(base)?;
+        let new_view = new.get(base).context("A base is missing its own view")?;
+
+        for (apworld_name, world_changes) in compute_changes(&old_view, new_view).worlds {
+            match changes.worlds.get_mut(&apworld_name) {
+                Some(merged) => merged.merge(world_changes),
+                None => {
+                    changes.worlds.insert(apworld_name, world_changes);
+                }
+            }
+        }
+    }
+
+    Ok(changes)
+}
+
+/// What changed between two views of the same base
 pub fn compute_changes(old_index: &Index, new_index: &Index) -> Changes {
     let mut worlds = BTreeMap::new();
+    let base = &new_index.archipelago_version;
 
     for (name, new_world) in &new_index.worlds {
         match old_index.worlds.get(name) {
@@ -35,12 +117,7 @@ pub fn compute_changes(old_index: &Index, new_index: &Index) -> Changes {
                 let added_versions: Vec<Version> = new_world.versions.keys().cloned().collect();
                 worlds.insert(
                     name.clone(),
-                    WorldChanges {
-                        world_name: new_world.name.clone(),
-                        added_versions,
-                        removed_versions: vec![],
-                        checksums: BTreeMap::new(),
-                    },
+                    WorldChanges::on_base(&new_world.name, added_versions, vec![], base),
                 );
             }
             Some(old_world) => {
@@ -63,12 +140,7 @@ pub fn compute_changes(old_index: &Index, new_index: &Index) -> Changes {
 
                 worlds.insert(
                     name.clone(),
-                    WorldChanges {
-                        world_name: new_world.name.clone(),
-                        added_versions: added,
-                        removed_versions: removed,
-                        checksums: BTreeMap::new(),
-                    },
+                    WorldChanges::on_base(&new_world.name, added, removed, base),
                 );
             }
         }
@@ -79,17 +151,16 @@ pub fn compute_changes(old_index: &Index, new_index: &Index) -> Changes {
             let removed_versions: Vec<Version> = old_world.versions.keys().cloned().collect();
             worlds.insert(
                 name.clone(),
-                WorldChanges {
-                    world_name: old_world.name.clone(),
-                    added_versions: vec![],
-                    removed_versions,
-                    checksums: BTreeMap::new(),
-                },
+                WorldChanges::on_base(&old_world.name, vec![], removed_versions, base),
             );
         }
     }
 
-    Changes { worlds }
+    Changes {
+        worlds,
+        bases: vec![base.clone()],
+        added_bases: vec![],
+    }
 }
 
 pub async fn download_changed_apworlds(
@@ -425,8 +496,12 @@ mod tests {
                         Version::from_str("0.1.0")?,
                         Checksum::Hash("abc123".into()),
                     )]),
+                    added_on: BTreeMap::new(),
+                    removed_from: BTreeMap::new(),
                 },
             )]),
+            bases: vec![],
+            added_bases: vec![],
         };
 
         write_changes(&changes, tmpdir.path())?;

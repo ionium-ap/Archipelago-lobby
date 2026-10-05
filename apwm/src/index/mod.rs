@@ -44,6 +44,8 @@ pub struct IndexSet {
     /// multi-base support know about, and it always has a view here.
     pub legacy_base: Version,
     bases: BTreeMap<Version, Index>,
+    index_file: IndexFile,
+    world_defs: BTreeMap<String, WorldDef>,
 }
 
 impl IndexSet {
@@ -69,7 +71,8 @@ impl IndexSet {
                 .file_stem()
                 .with_context(|| format!("World path {world_path:?} is invalid"))?
                 .to_string_lossy();
-            let world_def = WorldDef::new(&world_toml.path())?;
+            let world_def = WorldDef::new(&world_toml.path())
+                .with_context(|| format!("Reading {}", world_path.display()))?;
 
             world_defs.insert(apworld_name.to_string(), world_def);
         }
@@ -80,31 +83,19 @@ impl IndexSet {
             base_versions.push(index_file.archipelago_version.clone());
         }
 
-        let mut bases = BTreeMap::new();
+        let mut index_set = Self {
+            path: index_path.into(),
+            legacy_base: index_file.archipelago_version.clone(),
+            bases: BTreeMap::new(),
+            index_file,
+            world_defs,
+        };
         for base in base_versions {
-            let mut worlds = BTreeMap::new();
-            for (apworld_name, world_def) in &world_defs {
-                if let Some(world) = world_def.for_base(&base)? {
-                    worlds.insert(apworld_name.clone(), world);
-                }
-            }
-
-            let index = Index {
-                path: index_path.into(),
-                archipelago_repo: index_file.archipelago_repo.clone(),
-                archipelago_version: base.clone(),
-                index_homepage: index_file.index_homepage.clone(),
-                index_dir: index_file.index_dir.clone(),
-                worlds,
-            };
-            bases.insert(base, index);
+            let index = index_set.view_for_base(&base)?;
+            index_set.bases.insert(base, index);
         }
 
-        Ok(Self {
-            path: index_path.into(),
-            legacy_base: index_file.archipelago_version,
-            bases,
-        })
+        Ok(index_set)
     }
 
     pub fn bases(&self) -> impl Iterator<Item = &Version> {
@@ -117,6 +108,31 @@ impl IndexSet {
 
     pub fn legacy(&self) -> &Index {
         &self.bases[&self.legacy_base]
+    }
+
+    /// The world files as they're written, before any base is applied to them
+    pub fn world_defs(&self) -> &BTreeMap<String, WorldDef> {
+        &self.world_defs
+    }
+
+    /// What `base` sees of this index, whether or not the index declares that base. This is how
+    /// an index gets compared with one that has a base it doesn't know about yet.
+    pub fn view_for_base(&self, base: &Version) -> Result<Index> {
+        let mut worlds = BTreeMap::new();
+        for (apworld_name, world_def) in &self.world_defs {
+            if let Some(world) = world_def.for_base(base)? {
+                worlds.insert(apworld_name.clone(), world);
+            }
+        }
+
+        Ok(Index {
+            path: self.path.clone(),
+            archipelago_repo: self.index_file.archipelago_repo.clone(),
+            archipelago_version: base.clone(),
+            index_homepage: self.index_file.index_homepage.clone(),
+            index_dir: self.index_file.index_dir.clone(),
+            worlds,
+        })
     }
 
     /// Downloads the releases of every base. A release is the same file whichever base runs it,
@@ -132,8 +148,9 @@ impl IndexSet {
             .await
     }
 
-    /// An index holding every release that any base can download. It isn't what any base sees.
-    fn all_releases(&self) -> Index {
+    /// An index holding the releases of every base at once, to look one up without knowing which
+    /// bases have it. It isn't what any base sees.
+    pub fn all_releases(&self) -> Index {
         let mut all = self.legacy().clone();
         for index in self.bases.values() {
             for (apworld_name, world) in &index.worlds {
@@ -148,9 +165,6 @@ impl IndexSet {
                         .or_insert_with(|| origin.clone());
                 }
             }
-        }
-        for world in all.worlds.values_mut() {
-            world.versions.retain(|_, origin| !origin.is_supported());
         }
 
         all
