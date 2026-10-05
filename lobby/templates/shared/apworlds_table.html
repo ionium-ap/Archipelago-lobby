@@ -1,4 +1,5 @@
-{% macro apworlds_table(apworlds) %}
+{# options_query ends the links to the options pages: empty, or "?base=<Archipelago version>" #}
+{% macro apworlds_table(apworlds, options_query) %}
 <table class="styled apworlds-table">
     <thead>
         <tr>
@@ -21,7 +22,7 @@
                         {{ world.display_name }}
                     {% endmatch %}
 
-                    <a href="/options/{{id}}/{{version}}" class="create-yaml-btn" title="Create YAML"><i class="fa fa-file-circle-plus"></i></a>
+                    <a href="/options/{{id}}/{{version}}{{options_query}}" class="create-yaml-btn" title="Create YAML"><i class="fa fa-file-circle-plus"></i></a>
                     <span class="world-tags">{{ (world,origin)|world_tags|safe }}</span>
                 </td>
                 <td>{{ version }}</td>

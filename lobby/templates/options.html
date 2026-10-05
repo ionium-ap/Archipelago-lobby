@@ -28,7 +28,7 @@
         <div class="yaml-dropzone" id="yaml-dropzone">
             <h4><i class="fa fa-file-pen"></i> Edit Existing YAML</h4>
             <p>Upload or drag & drop an existing YAML file</p>
-            <form method="POST" action="/options/edit" id="yaml-upload-form">
+            <form method="POST" action="/options/edit{{ base_query }}" id="yaml-upload-form">
                 <input type="file" name="yaml_file" id="yaml-upload" accept=".yaml,.yml" style="display:none">
                 <input type="hidden" name="yaml" id="yaml-content">
                 <button type="button" id="upload-yaml-btn" class="validation-button">Choose File</button>
@@ -55,7 +55,7 @@
 {% endif %}
 
 {% if let (Some(apworld), Some(version)) = (self.selected_apworld.as_ref(), self.selected_version.as_ref()) %}
-<form id="options-form" method="POST" action="/options/{{apworld}}/{{version}}/download">
+<form id="options-form" method="POST" action="/options/{{apworld}}/{{version}}/download{{ base_query }}">
 {% else %}
 <form id="options-form">
 {% endif %}
@@ -396,11 +396,15 @@
         });
     }
 
+    // Keeps the page on the Archipelago version it is about when moving to another world or
+    // version: empty for the default one, "?base=<version>" otherwise.
+    const base_query = {{ base_query|json|safe }};
+
     const apworld_input = document.getElementById("apworld");
     apworld_input.onchange = function(event) {
         const apworld_name = event.target.value;
         if (!apworld_name) return;
-        window.location.href = `/options/${apworld_name}`
+        window.location.href = `/options/${apworld_name}` + base_query
     }
 
     const version_input = document.getElementById("version");
@@ -409,7 +413,7 @@
             const apworld_name = apworld_input.value;
             const version = event.target.value;
             if (!version) return;
-            window.location.href = `/options/${apworld_name}/${version}`
+            window.location.href = `/options/${apworld_name}/${version}` + base_query
         }
     }
 

@@ -12,6 +12,7 @@ use crate::session::LoggedInSession;
 use crate::session::Session;
 use crate::utils::ZipFile;
 use crate::views::filters;
+use crate::views::options_gen::base_query;
 use crate::{Context, LobbyConfig, TplContext};
 
 #[derive(Template, WebTemplate)]
@@ -21,6 +22,8 @@ pub struct RoomApworldsTpl<'a> {
     is_my_room: bool,
     apworlds: Vec<(String, (World, Version))>,
     room: Room,
+    // Ends the links to the options pages, so that they are about the room's Archipelago version
+    options_query: String,
 }
 
 #[rocket::get("/room/<room_id>/worlds")]
@@ -51,6 +54,8 @@ pub async fn room_worlds<'a>(
     let mut apworlds = Vec::from_iter(apworlds);
     apworlds.sort_by_key(|(_, (world, _))| world.display_name.to_lowercase());
 
+    let options_query = base_query(index_manager, &room.ap_version).await;
+
     Ok(RoomApworldsTpl {
         base: TplContext::from_session(
             "room",
@@ -63,6 +68,7 @@ pub async fn room_worlds<'a>(
         is_my_room,
         apworlds,
         room,
+        options_query,
     })
 }
 

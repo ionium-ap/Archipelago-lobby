@@ -60,27 +60,45 @@ const OPTIONS_CACHE_TTL_SECS: u64 = 24 * 3600;
 /// They can't live in the memory of a lobby process: a worker reports a finished job to
 /// whichever lobby process its connection is on, and the request waiting for that job may be
 /// served by another one.
+///
+/// A definition belongs to the Archipelago version, the base, whose worker generated it: the
+/// same release of a world can have other options, or none, on another base.
 #[derive(Clone)]
 pub struct OptionsCache {
     redis_pool: RedisPool,
+    legacy_base: Version,
 }
 
 impl OptionsCache {
-    pub fn new(redis_pool: RedisPool) -> Self {
-        Self { redis_pool }
+    /// `legacy_base` is the base whose definitions keep the keys they had before definitions
+    /// had a base: every definition from then was generated on it.
+    pub fn new(redis_pool: RedisPool, legacy_base: Version) -> Self {
+        Self {
+            redis_pool,
+            legacy_base,
+        }
     }
 
-    fn key(apworld_name: &str, version: &Version) -> String {
-        format!("options_def:{apworld_name}:{version}")
+    pub fn legacy_base(&self) -> &Version {
+        &self.legacy_base
+    }
+
+    fn key(&self, base: &Version, apworld_name: &str, version: &Version) -> String {
+        if base == &self.legacy_base {
+            format!("options_def:{apworld_name}:{version}")
+        } else {
+            format!("options_def:base:{base}:{apworld_name}:{version}")
+        }
     }
 
     pub async fn get(
         &self,
+        base: &Version,
         apworld_name: &str,
         version: &Version,
     ) -> anyhow::Result<Option<OptionsDef>> {
         let mut redis = self.redis_pool.get().await?;
-        let stored: Option<Vec<u8>> = redis.get(Self::key(apworld_name, version)).await?;
+        let stored: Option<Vec<u8>> = redis.get(self.key(base, apworld_name, version)).await?;
         let Some(stored) = stored else {
             return Ok(None);
         };
@@ -89,20 +107,26 @@ impl OptionsCache {
             Ok(options) => Ok(Some(options)),
             Err(e) => {
                 // Written by a lobby with another idea of what definitions look like
-                tracing::warn!(%apworld_name, %version, %e, "Ignoring unreadable option definitions");
+                tracing::warn!(%base, %apworld_name, %version, %e, "Ignoring unreadable option definitions");
                 Ok(None)
             }
         }
     }
 
-    pub async fn contains(&self, apworld_name: &str, version: &Version) -> anyhow::Result<bool> {
+    pub async fn contains(
+        &self,
+        base: &Version,
+        apworld_name: &str,
+        version: &Version,
+    ) -> anyhow::Result<bool> {
         let mut redis = self.redis_pool.get().await?;
 
-        Ok(redis.exists(Self::key(apworld_name, version)).await?)
+        Ok(redis.exists(self.key(base, apworld_name, version)).await?)
     }
 
     pub async fn insert(
         &self,
+        base: &Version,
         apworld_name: &str,
         version: &Version,
         options: &OptionsDef,
@@ -110,7 +134,7 @@ impl OptionsCache {
         let mut redis = self.redis_pool.get().await?;
         redis
             .set_ex::<_, _, ()>(
-                Self::key(apworld_name, version),
+                self.key(base, apworld_name, version),
                 encode_options_def(options)?,
                 OPTIONS_CACHE_TTL_SECS,
             )
@@ -159,6 +183,8 @@ struct OptionsTpl<'a> {
     // Options whose prefilled values are no longer valid for the current definitions
     outdated_values: HashSet<String>,
     default_player_name: String,
+    // Ends every options URL of the page, to stay on the Archipelago version it is about
+    base_query: String,
 }
 
 impl OptionsTpl<'_> {
@@ -273,10 +299,39 @@ impl OptionsTpl<'_> {
     }
 }
 
+/// The Archipelago version an options page or API call is about: the one its `base`
+/// parameter names, which the index has to describe, or the default one without it.
+pub(crate) async fn requested_base(
+    index_manager: &IndexManager,
+    base: Option<&str>,
+) -> anyhow::Result<Version> {
+    let Some(base) = base else {
+        return Ok(index_manager.default_base().await);
+    };
+    let base =
+        Version::from_str(base).map_err(|_| anyhow!("{base:?} isn't an Archipelago version"))?;
+    if !index_manager.describes(&base).await {
+        return Err(anyhow!("The index doesn't describe Archipelago {base}"));
+    }
+
+    Ok(base)
+}
+
+/// What an options URL needs at its end to be about `base`: nothing for the default base,
+/// `?base=<version>` for another one.
+pub(crate) async fn base_query(index_manager: &IndexManager, base: &Version) -> String {
+    if base == &index_manager.default_base().await {
+        return String::new();
+    }
+
+    // A `+` in a query is a space
+    format!("?base={}", base.to_string().replace('+', "%2B"))
+}
+
 /// Helper to fetch OptionsDef, using cache if available or queuing a job if not.
 ///
-/// `base` is the Archipelago version whose worker generates them. The cache doesn't tell
-/// bases apart yet, so a cached definition is returned whichever base generated it.
+/// `base` is the Archipelago version the definitions are for. A worker running it generates
+/// them, and they are cached for it alone.
 #[tracing::instrument(skip(options_gen_queue, options_cache))]
 pub(crate) async fn get_options_def(
     apworld_name: &str,
@@ -285,7 +340,7 @@ pub(crate) async fn get_options_def(
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
 ) -> Result<OptionsDef> {
-    if let Some(cached_options) = options_cache.get(apworld_name, version).await? {
+    if let Some(cached_options) = options_cache.get(base, apworld_name, version).await? {
         return Ok(cached_options);
     }
 
@@ -332,7 +387,7 @@ pub(crate) async fn get_options_def(
     // The queue callback stored them before the job got reported as resolved. That callback may
     // have run in another lobby process than this one.
     options_cache
-        .get(apworld_name, version)
+        .get(base, apworld_name, version)
         .await?
         .ok_or_else(|| anyhow!("Options not found in cache after successful job").into())
 }
@@ -376,7 +431,7 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
         for (apworld_name, version) in worlds {
             // Every lobby process preloads on startup, and they all share the cache
             if matches!(
-                options_cache.contains(&apworld_name, &version).await,
+                options_cache.contains(&base, &apworld_name, &version).await,
                 Ok(true)
             ) {
                 continue;
@@ -408,7 +463,10 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
     }
 }
 
-#[rocket::get("/options/<apworld_name>/<version>")]
+// The options pages are about one Archipelago version, the default one unless `?base=` names
+// another. Every link and form on them carries it along, see `base_query`.
+
+#[rocket::get("/options/<apworld_name>/<version>?<base>")]
 #[tracing::instrument(skip(
     options_gen_queue,
     options_cache,
@@ -420,6 +478,7 @@ impl rocket::fairing::Fairing for OptionsPreloadFairing {
 async fn options_gen_api<'a>(
     apworld_name: &'a str,
     version: String,
+    base: Option<&'a str>,
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
     index_manager: &'a State<IndexManager>,
@@ -429,7 +488,7 @@ async fn options_gen_api<'a>(
     redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
     redirect_to.set("/options");
-    let base = index_manager.default_base().await;
+    let base = requested_base(index_manager, base).await?;
     let index = index_manager.index_for(&base).await?;
     let Some(apworld) = index.worlds.get(apworld_name) else {
         Err(anyhow!("Unknown apworld"))?
@@ -463,6 +522,7 @@ async fn options_gen_api<'a>(
     .await?;
 
     let default_player_name = get_default_player_name(&session, ctx).await;
+    let base_query = base_query(index_manager, &base).await;
 
     Ok(OptionsTpl {
         base: TplContext::from_session(
@@ -485,10 +545,11 @@ async fn options_gen_api<'a>(
         yaml_option_names: HashSet::new(),
         outdated_values: HashSet::new(),
         default_player_name,
+        base_query,
     })
 }
 
-#[rocket::get("/options/<apworld_name>")]
+#[rocket::get("/options/<apworld_name>?<base>")]
 #[tracing::instrument(skip(
     options_gen_queue,
     options_cache,
@@ -499,6 +560,7 @@ async fn options_gen_api<'a>(
 ))]
 async fn options_apworld_versions<'a>(
     apworld_name: &'a str,
+    base: Option<&'a str>,
     index_manager: &'a State<IndexManager>,
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
@@ -508,23 +570,24 @@ async fn options_apworld_versions<'a>(
     redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
     redirect_to.set("/options");
-    let base = index_manager.default_base().await;
-    let index = index_manager.index_for(&base).await?;
-    let Some(apworld) = index.worlds.get(apworld_name) else {
-        Err(anyhow!("Unknown apworld"))?
+    let last_version = {
+        let wanted_base = requested_base(index_manager, base).await?;
+        let index = index_manager.index_for(&wanted_base).await?;
+        let Some(apworld) = index.worlds.get(apworld_name) else {
+            Err(anyhow!("Unknown apworld"))?
+        };
+        apworld
+            .versions
+            .keys()
+            .max()
+            .ok_or_else(|| anyhow!("This apworld has no version"))?
+            .to_string()
     };
-    let versions: Vec<String> = apworld
-        .versions
-        .keys()
-        .map(|v| v.to_string())
-        .rev()
-        .collect();
-    let last_version = versions.first().unwrap().to_string();
-    drop(index);
 
     options_gen_api(
         apworld_name,
         last_version,
+        base,
         options_gen_queue,
         options_cache,
         index_manager,
@@ -536,15 +599,19 @@ async fn options_apworld_versions<'a>(
     .await
 }
 
-#[rocket::get("/options")]
-#[tracing::instrument(skip(index_manager, ctx, session))]
+#[rocket::get("/options?<base>")]
+#[tracing::instrument(skip(index_manager, ctx, session, redirect_to))]
 async fn options_gen<'a>(
+    base: Option<&str>,
     index_manager: &State<IndexManager>,
     ctx: &'a State<Context>,
     session: Session,
     lobby_config: &State<LobbyConfig>,
+    redirect_to: &RedirectTo,
 ) -> Result<OptionsTpl<'a>> {
-    let base = index_manager.default_base().await;
+    // Only `base` can be wrong here, and the page without it always works
+    redirect_to.set("/options");
+    let base = requested_base(index_manager, base).await?;
     let index = index_manager.index_for(&base).await?;
     let mut apworlds: Vec<(String, String)> = index
         .worlds
@@ -554,6 +621,7 @@ async fn options_gen<'a>(
     apworlds.sort_by_key(|(_, world_name)| world_name.to_lowercase());
 
     let default_player_name = get_default_player_name(&session, ctx).await;
+    let base_query = base_query(index_manager, &base).await;
 
     Ok(OptionsTpl {
         base: TplContext::from_session(
@@ -576,6 +644,7 @@ async fn options_gen<'a>(
         yaml_option_names: HashSet::new(),
         outdated_values: HashSet::new(),
         default_player_name,
+        base_query,
     })
 }
 
@@ -658,9 +727,10 @@ fn validate_numeric_value(value: i64, option_def: &crate::jobs::OptionDef) -> bo
     }
 }
 
-#[rocket::post("/options/edit", data = "<form>")]
+#[rocket::post("/options/edit?<base>", data = "<form>")]
 #[tracing::instrument(skip(options_gen_queue, options_cache, index_manager, ctx, session, form))]
 async fn edit_yaml<'a>(
+    base: Option<&str>,
     form: Form<YamlUpload<'a>>,
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
@@ -700,7 +770,7 @@ async fn edit_yaml<'a>(
         return Err(anyhow!("Invalid 'game' field in YAML").into());
     };
 
-    let base = index_manager.default_base().await;
+    let base = requested_base(index_manager, base).await?;
     let index = index_manager.index_for(&base).await?;
     let (apworld_name, latest_version, display_name) = index
         .worlds
@@ -805,6 +875,7 @@ async fn edit_yaml<'a>(
         Some(_) => "Player{NUMBER}".to_string(),
         None => get_default_player_name(&session, ctx).await,
     };
+    let base_query = base_query(index_manager, &base).await;
 
     Ok(OptionsTpl {
         base: TplContext::from_session(
@@ -827,14 +898,16 @@ async fn edit_yaml<'a>(
         yaml_option_names,
         outdated_values,
         default_player_name,
+        base_query,
     })
 }
 
-#[rocket::post("/options/<apworld_name>/<version>/download", data = "<form>")]
+#[rocket::post("/options/<apworld_name>/<version>/download?<base>", data = "<form>")]
 #[tracing::instrument(skip(host, index_manager, form, options_gen_queue, options_cache))]
 async fn download_yaml<'a>(
     apworld_name: &str,
     version: &str,
+    base: Option<&str>,
     host: &Host<'_>,
     form: Form<HashMap<String, String>>,
     index_manager: &State<IndexManager>,
@@ -849,7 +922,9 @@ async fn download_yaml<'a>(
     };
 
     let parsed_version = Version::from_str(version).map_err(|_| not_found("Invalid version"))?;
-    let base = index_manager.default_base().await;
+    let base = requested_base(index_manager, base)
+        .await
+        .map_err(|_| not_found("Unknown Archipelago version"))?;
     let game_name = {
         let index = index_manager.index_for(&base).await?;
         let Some(apworld) = index.worlds.get(apworld_name) else {
@@ -878,11 +953,14 @@ async fn download_yaml<'a>(
         player_name
     };
 
+    let options_query = base_query(index_manager, &base).await;
     let description = form
         .get("description")
         .filter(|s| !s.is_empty())
         .cloned()
-        .unwrap_or_else(|| format!("Generated on https://{}/options/{}", host, apworld_name));
+        .unwrap_or_else(|| {
+            format!("Generated on https://{host}/options/{apworld_name}{options_query}")
+        });
 
     // Build game options in definition order
     let mut game_options: IndexMap<String, serde_json::Value> = IndexMap::new();
@@ -939,9 +1017,12 @@ mod tests {
     use crate::jobs::{get_options_gen_callback, OptionDef, OptionsGenResponse};
     use crate::test_utils::{redis_pool, start_valkey, ValkeyInstance};
 
+    const LEGACY: Version = Version::new(0, 6, 7);
+    const NEWER: Version = Version::new(0, 6, 8);
+
     /// What one lobby process holds of the options generator
     async fn lobby_process(valkey: &ValkeyInstance) -> (OptionsGenQueue, OptionsCache) {
-        let cache = OptionsCache::new(redis_pool(valkey));
+        let cache = OptionsCache::new(redis_pool(valkey), LEGACY);
         let queue = OptionsGenQueue::builder("options_gen")
             .with_default_partition("0.6.7")
             .with_callback(get_options_gen_callback(cache.clone()))
@@ -1002,7 +1083,7 @@ mod tests {
         let options = get_options_def(
             "world",
             &Version::new(1, 0, 0),
-            &Version::new(0, 6, 7),
+            &LEGACY,
             State::from(&asking_queue),
             State::from(&asking_cache),
         )
@@ -1018,19 +1099,19 @@ mod tests {
         let valkey = start_valkey();
         let (queue, cache) = lobby_process(&valkey).await;
         let version = Version::new(1, 0, 0);
-        assert!(!cache.contains("world", &version).await.unwrap());
+        assert!(!cache.contains(&LEGACY, "world", &version).await.unwrap());
 
         cache
-            .insert("world", &version, &test_options())
+            .insert(&LEGACY, "world", &version, &test_options())
             .await
             .unwrap();
 
-        assert!(cache.contains("world", &version).await.unwrap());
+        assert!(cache.contains(&LEGACY, "world", &version).await.unwrap());
         // Nothing serves the queue here, so this only returns if the cache answers
         let options = get_options_def(
             "world",
             &version,
-            &Version::new(0, 6, 7),
+            &LEGACY,
             State::from(&queue),
             State::from(&cache),
         )
@@ -1038,7 +1119,7 @@ mod tests {
         .unwrap();
         assert_eq!(as_json(&options), as_json(&test_options()));
         assert!(cache
-            .get("world", &Version::new(2, 0, 0))
+            .get(&LEGACY, "world", &Version::new(2, 0, 0))
             .await
             .unwrap()
             .is_none());
@@ -1048,14 +1129,173 @@ mod tests {
     async fn test_unreadable_definitions_are_a_miss() {
         let valkey = start_valkey();
         let pool = redis_pool(&valkey);
-        let cache = OptionsCache::new(pool.clone());
+        let cache = OptionsCache::new(pool.clone(), LEGACY);
         let version = Version::new(1, 0, 0);
         let mut redis = pool.get().await.unwrap();
         redis
-            .set::<_, _, ()>(OptionsCache::key("world", &version), "not gzip")
+            .set::<_, _, ()>(cache.key(&LEGACY, "world", &version), "not gzip")
             .await
             .unwrap();
 
-        assert!(cache.get("world", &version).await.unwrap().is_none());
+        assert!(cache
+            .get(&LEGACY, "world", &version)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    fn other_options() -> OptionsDef {
+        let mut options = test_options();
+        options.insert("Only On The Newer Base".to_string(), IndexMap::new());
+
+        options
+    }
+
+    #[rocket::async_test]
+    async fn test_definitions_of_two_bases_are_kept_apart() {
+        let valkey = start_valkey();
+        let (_queue, cache) = lobby_process(&valkey).await;
+        let version = Version::new(1, 0, 0);
+
+        cache
+            .insert(&LEGACY, "world", &version, &test_options())
+            .await
+            .unwrap();
+        assert!(!cache.contains(&NEWER, "world", &version).await.unwrap());
+
+        cache
+            .insert(&NEWER, "world", &version, &other_options())
+            .await
+            .unwrap();
+
+        let legacy = cache.get(&LEGACY, "world", &version).await.unwrap();
+        assert_eq!(as_json(&legacy.unwrap()), as_json(&test_options()));
+        let newer = cache.get(&NEWER, "world", &version).await.unwrap();
+        assert_eq!(as_json(&newer.unwrap()), as_json(&other_options()));
+    }
+
+    #[rocket::async_test]
+    async fn test_legacy_base_keeps_the_keys_from_before_bases() {
+        let valkey = start_valkey();
+        let pool = redis_pool(&valkey);
+        let cache = OptionsCache::new(pool.clone(), LEGACY);
+        let version = Version::new(1, 0, 0);
+
+        // What a lobby from before definitions had a base stored, and still reads
+        let mut redis = pool.get().await.unwrap();
+        redis
+            .set::<_, _, ()>(
+                "options_def:world:1.0.0",
+                encode_options_def(&test_options()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let found = cache.get(&LEGACY, "world", &version).await.unwrap();
+        assert_eq!(as_json(&found.unwrap()), as_json(&test_options()));
+        assert!(cache
+            .get(&NEWER, "world", &version)
+            .await
+            .unwrap()
+            .is_none());
+
+        cache
+            .insert(&NEWER, "world", &version, &other_options())
+            .await
+            .unwrap();
+        let mut keys: Vec<String> = redis.keys("options_def:*").await.unwrap();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "options_def:base:0.6.8:world:1.0.0",
+                "options_def:world:1.0.0"
+            ]
+        );
+    }
+
+    /// A worker for `base` that takes one job and answers it with `options`
+    fn worker(
+        queue: OptionsGenQueue,
+        base: &'static str,
+        options: OptionsDef,
+    ) -> rocket::tokio::task::JoinHandle<Option<Version>> {
+        rocket::tokio::spawn(async move {
+            let job = loop {
+                if let Some(job) = queue.claim_job_in(Some(base), "worker").await.unwrap() {
+                    break job;
+                }
+            };
+            let response = OptionsGenResponse {
+                options,
+                error: None,
+            };
+            queue
+                .resolve_job("worker", job.job_id, JobStatus::Success, Some(response))
+                .await
+                .unwrap();
+
+            job.params.ap_version
+        })
+    }
+
+    #[rocket::async_test]
+    async fn test_definitions_are_generated_by_the_base_they_are_for() {
+        let valkey = start_valkey();
+        let (asking_queue, cache) = lobby_process(&valkey).await;
+        let (legacy_queue, _) = lobby_process(&valkey).await;
+        let (newer_queue, _) = lobby_process(&valkey).await;
+        let version = Version::new(1, 0, 0);
+
+        // Both workers wait. Only the one for the base that is asked for gets the job.
+        let legacy_worker = worker(legacy_queue, "0.6.7", test_options());
+        let newer_worker = worker(newer_queue, "0.6.8", other_options());
+
+        let options = get_options_def(
+            "world",
+            &version,
+            &NEWER,
+            State::from(&asking_queue),
+            State::from(&cache),
+        )
+        .await
+        .unwrap();
+        assert_eq!(as_json(&options), as_json(&other_options()));
+        assert_eq!(newer_worker.await.unwrap(), Some(NEWER));
+        assert!(!cache.contains(&LEGACY, "world", &version).await.unwrap());
+
+        let options = get_options_def(
+            "world",
+            &version,
+            &LEGACY,
+            State::from(&asking_queue),
+            State::from(&cache),
+        )
+        .await
+        .unwrap();
+        assert_eq!(as_json(&options), as_json(&test_options()));
+        assert_eq!(legacy_worker.await.unwrap(), Some(LEGACY));
+    }
+
+    #[rocket::async_test]
+    async fn test_job_from_before_bases_is_stored_for_the_legacy_base() {
+        let valkey = start_valkey();
+        let (queue, cache) = lobby_process(&valkey).await;
+        let params = OptionsGenParams {
+            apworld: ("world".to_string(), Version::new(1, 0, 0)),
+            otlp_context: HashMap::new(),
+            ap_version: None,
+        };
+        queue
+            .enqueue_job(&params, wq::Priority::Low, Duration::from_secs(30))
+            .await
+            .unwrap();
+
+        worker(queue, "0.6.7", test_options()).await.unwrap();
+
+        assert!(cache
+            .contains(&LEGACY, "world", &Version::new(1, 0, 0))
+            .await
+            .unwrap());
     }
 }

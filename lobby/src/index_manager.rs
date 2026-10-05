@@ -232,6 +232,11 @@ impl IndexManager {
             .map_err(|_| anyhow!("The index doesn't describe Archipelago {base}"))
     }
 
+    /// Whether `index_for` has something for `base`
+    pub async fn describes(&self, base: &Version) -> bool {
+        self.loaded.read().await.index.get(base).is_some()
+    }
+
     /// `archipelago_version` in the index: the base every room was on before rooms had one,
     /// and the one whose jobs keep the queues' original keys.
     pub async fn legacy_base(&self) -> Version {

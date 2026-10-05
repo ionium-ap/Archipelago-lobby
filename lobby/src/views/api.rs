@@ -413,13 +413,26 @@ pub struct GameInfo {
     game_name: String,
 }
 
-#[get("/games")]
+/// `base` in the two routes below is an Archipelago version the index describes. Without it
+/// they answer for the default one. A room's is in its `ap_version`.
+async fn api_base(index_manager: &IndexManager, base: Option<&str>) -> ApiResult<semver::Version> {
+    super::options_gen::requested_base(index_manager, base)
+        .await
+        .map_err(|error| ApiError {
+            error,
+            status: Status::NotFound,
+        })
+}
+
+#[get("/games?<base>")]
 #[tracing::instrument(skip(_session, index_manager))]
 pub(crate) async fn list_games(
     _session: AdminSession,
+    base: Option<&str>,
     index_manager: &State<IndexManager>,
-) -> Json<Vec<GameInfo>> {
-    let index = index_manager.default_index().await;
+) -> ApiResult<Json<Vec<GameInfo>>> {
+    let base = api_base(index_manager, base).await?;
+    let index = index_manager.index_for(&base).await?;
     let mut games: Vec<GameInfo> = index
         .worlds
         .iter()
@@ -429,7 +442,7 @@ pub(crate) async fn list_games(
         })
         .collect();
     games.sort_by(|a, b| a.game_name.to_lowercase().cmp(&b.game_name.to_lowercase()));
-    Json(games)
+    Ok(Json(games))
 }
 
 #[derive(Serialize)]
@@ -441,16 +454,17 @@ pub struct OptionInfo {
     valid_keys: Option<Vec<String>>,
 }
 
-#[get("/games/<apworld>/options")]
+#[get("/games/<apworld>/options?<base>")]
 #[tracing::instrument(skip(_session, index_manager, options_gen_queue, options_cache))]
 pub(crate) async fn game_options(
     _session: AdminSession,
     apworld: &str,
+    base: Option<&str>,
     index_manager: &State<IndexManager>,
     options_gen_queue: &State<OptionsGenQueue>,
     options_cache: &State<OptionsCache>,
 ) -> ApiResult<Json<Vec<OptionInfo>>> {
-    let base = index_manager.default_base().await;
+    let base = api_base(index_manager, base).await?;
     let version = {
         let index = index_manager.index_for(&base).await?;
         let world = index.worlds.get(apworld).ok_or_else(|| ApiError {

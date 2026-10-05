@@ -315,7 +315,7 @@ pub async fn main() -> crate::error::Result<()> {
 
     let lobby_config = get_lobby_config();
 
-    let options_cache = OptionsCache::new(redis_pool.clone());
+    let options_cache = OptionsCache::new(redis_pool.clone(), index_manager.legacy_base().await);
 
     let options_gen_queue = OptionsGenQueue::builder("options_gen")
         .with_default_partition(&legacy_base)
