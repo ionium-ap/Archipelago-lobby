@@ -1,0 +1,7 @@
+# Core in 0.6.7, removed from core in 0.6.8.
+name = "Left Core World"
+home = "https://archipelago.gg"
+supported = true
+
+[base.">=0.6.8"]
+disabled = true

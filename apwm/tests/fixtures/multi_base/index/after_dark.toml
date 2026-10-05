@@ -1,0 +1,6 @@
+name = "After Dark World"
+default_url = "https://example.invalid/after_dark-{{version}}/after_dark.apworld"
+tags = ["ad"]
+
+[versions]
+"1.0.0" = {}

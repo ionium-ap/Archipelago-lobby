@@ -1,0 +1,9 @@
+name = "Origins World"
+
+[versions]
+"1.0.0" = { url = "https://example.invalid/origins-1.0.0.apworld" }
+"1.0.1" = { local = "../apworlds/origins-1.0.1.apworld" }
+
+[releases]
+"2.0.0" = { min_ap_version = "0.6.8", url = "https://example.invalid/origins-2.0.0.apworld" }
+"2.0.1" = { min_ap_version = "0.6.8", local = "../apworlds/origins-2.0.1.apworld" }

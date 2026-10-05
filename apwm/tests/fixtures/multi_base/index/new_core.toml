@@ -1,0 +1,9 @@
+# New in core as of 0.6.8 and never in the index before. Old lobbies must not offer it, and a
+# top-level `disabled` is the only thing they honor.
+name = "New Core World"
+home = "https://archipelago.gg"
+disabled = true
+
+[base.">=0.6.8"]
+disabled = false
+supported = true

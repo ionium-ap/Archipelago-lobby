@@ -1,0 +1,12 @@
+name = "Custom World"
+default_url = "https://example.invalid/custom-{{version}}/custom.apworld"
+
+[versions]
+"1.1.0" = {}
+"1.1.1" = {}
+
+[releases]
+# Still offered to old lobbies through [versions], but not on 0.6.8.
+"1.1.0" = { max_ap_version = "0.6.7" }
+# Needs 0.6.8, so it must not appear in [versions].
+"1.2.0" = { min_ap_version = "0.6.8" }

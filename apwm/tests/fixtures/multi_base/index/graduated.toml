@@ -1,0 +1,16 @@
+# A custom world that entered core in 0.6.8. From 0.6.8 on the core copy is used and the custom
+# releases are not offered.
+name = "Graduated World"
+default_url = "https://example.invalid/graduated-{{version}}/graduated.apworld"
+
+[versions]
+"2.1.5" = {}
+"2.1.7" = {}
+
+[releases]
+"2.1.5" = { max_ap_version = "0.6.7" }
+"2.1.7" = { max_ap_version = "0.6.7" }
+
+[base.">=0.6.8"]
+supported = true
+default_version = "latest_supported"
