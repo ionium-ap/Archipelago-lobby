@@ -15,16 +15,32 @@
         <td>Index homepage</td>
         <td><a href="{{ index.index_homepage }}">{{ index.index_homepage }}</a></td>
     </tr>
+    {% if !base_options.is_empty() %}
+    <tr>
+        <td><label class="unstyled" for="base">Archipelago version</label></td>
+        <td>
+            <select id="base" class="base-select" data-base-select>
+                {% for option in base_options %}
+                <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+            </select>
+        </td>
+    </tr>
+    {% endif %}
     {% if base.is_logged_in %}
     <tr>
         <td>Download</td>
-        <td><a class="button-emulator validation-button" href="/worlds/download_all">Download all apworlds</a></td>
+        <td><a class="button-emulator validation-button" href="/worlds/download_all{{ base_query }}">Download all apworlds</a></td>
     </tr>
 
     {% endif %}
 </table>
 
-{% call apworlds_table::apworlds_table(apworlds, "") %}{% endcall %}
+{% call apworlds_table::apworlds_table(apworlds, base_query) %}{% endcall %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/base_select.js?{{ base.js_version }}" defer></script>
 {% endblock %}
 
 {% block styles %}

@@ -16,6 +16,13 @@
             <h4><i class="fa fa-file-circle-plus"></i> Create New YAML</h4>
             <p>Start fresh with a new configuration file for your game</p>
             <form>
+                {% if !base_options.is_empty() %}
+                <select id="base" class="base-select" style="width: 100%" title="The Archipelago version to make a YAML for">
+                    {% for option in base_options %}
+                    <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                </select>
+                {% endif %}
                 <select name="apworld" id="apworld" style="width: 100%">
                     <option value="">Select a game...</option>
                     {% for (apworld_name, world_name) in self.apworlds %}
@@ -38,6 +45,13 @@
 </section>
 {% else %}
 <form>
+    {% if !base_options.is_empty() %}
+    <select id="base" class="base-select" title="The Archipelago version to make a YAML for" {%+ if self.prefilled_values.is_some() %}disabled{% endif %}>
+        {% for option in base_options %}
+        <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+    </select>
+    {% endif %}
     <select name="apworld" id="apworld" {%+ if self.prefilled_values.is_some() %}disabled{% endif %}>
         {% for (apworld_name, world_name) in self.apworlds %}
         <option value="{{apworld_name}}" {%+ if selected_apworld.as_ref() == Some(*apworld_name) %} selected {% endif %}>{{world_name}}</option>
@@ -399,6 +413,17 @@
     // Keeps the page on the Archipelago version it is about when moving to another world or
     // version: empty for the default one, "?base=<version>" otherwise.
     const base_query = {{ base_query|json|safe }};
+
+    // Another Archipelago version has other releases of a world, so the page of the world is
+    // asked again, and that gives the newest release there.
+    const base_input = document.getElementById("base");
+    if (base_input) {
+        base_input.onchange = function(event) {
+            const apworld_name = document.getElementById("apworld").value;
+            const query = "?base=" + encodeURIComponent(event.target.value);
+            window.location.href = (apworld_name ? `/options/${apworld_name}` : "/options") + query;
+        }
+    }
 
     const apworld_input = document.getElementById("apworld");
     apworld_input.onchange = function(event) {

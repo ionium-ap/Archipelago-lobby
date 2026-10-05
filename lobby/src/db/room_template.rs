@@ -31,8 +31,9 @@ pub struct NewRoomTemplate<'a> {
     pub meta_file: String,
     pub is_bundle_room: bool,
     pub locked: bool,
-    /// `None` leaves the column as it is on an update, and NULL on an insert
-    pub ap_version: Option<ApVersion>,
+    /// `Some(None)` is a template that names no Archipelago version. `None` leaves the column
+    /// as it is.
+    pub ap_version: Option<Option<ApVersion>>,
 }
 
 #[tracing::instrument(skip(conn))]

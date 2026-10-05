@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::TplContext;
 
 use super::manifest_editor::{manifest_from_form, ManifestForm, ManifestFormBuilder};
+use super::utils::BaseOption;
 
 #[derive(FromForm, Debug)]
 pub struct CreateRoomForm<'a> {
@@ -172,6 +173,21 @@ impl Display for RoomSettingsType {
     }
 }
 
+/// The part of the form that says which Archipelago version the room or template is on, when
+/// there is more than one to choose from.
+///
+/// The worlds of the form's "Apworlds" tab are those of one version, so choosing another one
+/// can't be a field of the form like the others. For a room that exists it is a request of its
+/// own, which has consequences for the YAMLs in the room. For a room or a template being
+/// made, it loads the form again for the chosen version.
+pub struct BaseSelect {
+    pub options: Vec<BaseOption>,
+    /// Where choosing is posted to, for a room that exists
+    pub switch_url: Option<String>,
+    /// Why it can't be changed, when it can't
+    pub locked: Option<String>,
+}
+
 #[derive(Template, WebTemplate)]
 #[template(path = "shared/room_form.html")]
 pub struct RoomSettingsBuilder<'a> {
@@ -182,6 +198,9 @@ pub struct RoomSettingsBuilder<'a> {
     ty: RoomSettingsType,
     read_only: bool,
     tpl: Option<RoomTemplateBuilder>,
+    base_select: Option<BaseSelect>,
+    // Ends the URL the form is posted to, for what isn't a field of it
+    action_query: String,
 }
 
 pub struct RoomTemplateBuilder {
@@ -218,6 +237,8 @@ impl<'a> RoomSettingsBuilder<'a> {
             room_id: Some(room.id.as_generic_id()),
             ty: RoomSettingsType::Room,
             read_only: false,
+            base_select: None,
+            action_query: String::new(),
             tpl: None,
         }
     }
@@ -243,6 +264,8 @@ impl<'a> RoomSettingsBuilder<'a> {
             room_id: None,
             ty: RoomSettingsType::Room,
             read_only: false,
+            base_select: None,
+            action_query: String::new(),
             tpl: None,
         })
     }
@@ -260,6 +283,8 @@ impl<'a> RoomSettingsBuilder<'a> {
             room_id: Some(tpl.id.as_generic_id()),
             ty: RoomSettingsType::Template,
             read_only: false,
+            base_select: None,
+            action_query: String::new(),
         }
     }
 
@@ -283,12 +308,24 @@ impl<'a> RoomSettingsBuilder<'a> {
             room: RoomSettings::default(index)?,
             ty,
             read_only: false,
+            base_select: None,
+            action_query: String::new(),
             tpl,
         })
     }
 
     pub fn read_only(mut self, ro: bool) -> Self {
         self.read_only = ro;
+        self
+    }
+
+    pub fn with_base_select(mut self, base_select: Option<BaseSelect>) -> Self {
+        self.base_select = base_select;
+        self
+    }
+
+    pub fn with_action_query(mut self, action_query: String) -> Self {
+        self.action_query = action_query;
         self
     }
 }

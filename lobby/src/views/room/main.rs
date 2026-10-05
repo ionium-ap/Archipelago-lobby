@@ -11,6 +11,7 @@ use crate::session::{LoggedInSession, Session};
 use crate::utils::{NamedBuf, ZipFile};
 use crate::views::api;
 use crate::views::filters;
+use crate::views::utils::{base_chip, BaseChip};
 use crate::yaml::{compute_ap_slot_names, YamlValidationResult};
 use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
@@ -44,6 +45,7 @@ pub struct RoomTpl<'a> {
     game_display_names: HashMap<String, String>,
     // Map from original player name to AP truncated slot name
     truncated_names: HashMap<String, String>,
+    base_chip: BaseChip,
 }
 
 impl RoomTpl<'_> {
@@ -102,6 +104,8 @@ pub async fn room<'a>(
         .unique_by(|yaml| &yaml.0.game)
         .count();
 
+    let base_chip = base_chip(&room.ap_version, &index_manager.default_base().await);
+
     let is_my_room = session.is_admin || session.user_id == Some(room.settings.author_id);
     let user_has_yaml = yamls
         .iter()
@@ -140,6 +144,7 @@ pub async fn room<'a>(
         current_user_has_yaml_in_room: user_has_yaml,
         game_display_names,
         truncated_names,
+        base_chip,
     })
 }
 

@@ -1,3 +1,4 @@
+use super::utils::{base_options, BaseOption};
 use crate::{
     db::get_username,
     error::{ApiError, ApiResult, RedirectTo, Result, WithStatus},
@@ -185,6 +186,8 @@ struct OptionsTpl<'a> {
     default_player_name: String,
     // Ends every options URL of the page, to stay on the Archipelago version it is about
     base_query: String,
+    // The Archipelago versions to choose from, when there is more than one
+    base_options: Vec<BaseOption>,
 }
 
 impl OptionsTpl<'_> {
@@ -315,6 +318,20 @@ pub(crate) async fn requested_base(
     }
 
     Ok(base)
+}
+
+/// The entries of a selector of the version a page is about, with `base` selected. None when
+/// there is nothing to choose.
+pub(crate) async fn selectable_bases(
+    index_manager: &IndexManager,
+    base: &Version,
+) -> Vec<BaseOption> {
+    let offered = index_manager.offered_bases().await;
+    if offered.len() < 2 {
+        return vec![];
+    }
+
+    base_options(&offered, Some(base))
 }
 
 /// What an options URL needs at its end to be about `base`: nothing for the default base,
@@ -521,6 +538,7 @@ async fn options_gen_api<'a>(
     .await?;
 
     let default_player_name = get_default_player_name(&session, ctx).await;
+    let base_options = selectable_bases(index_manager, &base).await;
     let base_query = base_query(index_manager, &base).await;
 
     Ok(OptionsTpl {
@@ -545,6 +563,7 @@ async fn options_gen_api<'a>(
         outdated_values: HashSet::new(),
         default_player_name,
         base_query,
+        base_options,
     })
 }
 
@@ -620,6 +639,7 @@ async fn options_gen<'a>(
     apworlds.sort_by_key(|(_, world_name)| world_name.to_lowercase());
 
     let default_player_name = get_default_player_name(&session, ctx).await;
+    let base_options = selectable_bases(index_manager, &base).await;
     let base_query = base_query(index_manager, &base).await;
 
     Ok(OptionsTpl {
@@ -644,6 +664,7 @@ async fn options_gen<'a>(
         outdated_values: HashSet::new(),
         default_player_name,
         base_query,
+        base_options,
     })
 }
 
@@ -874,6 +895,7 @@ async fn edit_yaml<'a>(
         Some(_) => "Player{NUMBER}".to_string(),
         None => get_default_player_name(&session, ctx).await,
     };
+    let base_options = selectable_bases(index_manager, &base).await;
     let base_query = base_query(index_manager, &base).await;
 
     Ok(OptionsTpl {
@@ -898,6 +920,7 @@ async fn edit_yaml<'a>(
         outdated_values,
         default_player_name,
         base_query,
+        base_options,
     })
 }
 

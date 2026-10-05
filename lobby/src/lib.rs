@@ -36,6 +36,7 @@ use views::options_gen::{OptionsCache, OptionsPreloadFairing};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations/");
 
+pub mod base_switch;
 pub mod config;
 pub mod db;
 pub mod error;

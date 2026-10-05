@@ -18,11 +18,13 @@ use rocket::State;
 use semver::Version;
 use std::collections::BTreeMap;
 
-use crate::error::Result;
+use crate::error::{RedirectTo, Result};
 use crate::index_manager::IndexManager;
 use crate::session::{AdminSession, LoggedInSession};
 use crate::utils::{RenamedFile, ZipFile};
 use crate::views::filters;
+use crate::views::options_gen::{base_query, requested_base, selectable_bases};
+use crate::views::utils::BaseOption;
 use crate::{Context, LobbyConfig, TplContext};
 
 #[derive(Template, WebTemplate)]
@@ -31,17 +33,28 @@ struct WorldsListTpl<'a> {
     base: TplContext<'a>,
     index: Index,
     apworlds: Vec<(String, (World, Version))>,
+    // The Archipelago versions to choose from, when there is more than one
+    base_options: Vec<BaseOption>,
+    // Ends the links that are about the version the page shows
+    base_query: String,
 }
 
-#[rocket::get("/worlds")]
+#[rocket::get("/worlds?<base>")]
 #[tracing::instrument(skip_all)]
 async fn list_worlds<'a>(
+    base: Option<&str>,
     index_manager: &'a State<IndexManager>,
     session: Session,
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
+    redirect_to: &RedirectTo,
 ) -> Result<WorldsListTpl<'a>> {
-    let index = index_manager.default_index().await.clone();
+    // Only `base` can be wrong here, and the page without it always works
+    redirect_to.set("/worlds");
+    let base = requested_base(index_manager, base).await?;
+    let index = index_manager.index_for(&base).await?.clone();
+    let base_options = selectable_bases(index_manager, &base).await;
+    let base_query = base_query(index_manager, &base).await;
     let manifest = Manifest::from_index_with_default_versions(&index)?;
     let (apworlds, _) = manifest.resolve_with(&index);
     let mut apworlds = Vec::from_iter(apworlds);
@@ -58,16 +71,21 @@ async fn list_worlds<'a>(
         .await,
         index,
         apworlds,
+        base_options,
+        base_query,
     })
 }
 
-#[rocket::get("/worlds/download_all")]
+#[rocket::get("/worlds/download_all?<base>")]
 #[tracing::instrument(skip_all)]
-async fn download_all(
-    index_manager: &State<IndexManager>,
+async fn download_all<'a>(
+    base: Option<&str>,
+    index_manager: &'a State<IndexManager>,
     _session: LoggedInSession,
-) -> Result<ZipFile<'_>> {
-    let base = index_manager.default_base().await;
+    redirect_to: &RedirectTo,
+) -> Result<ZipFile<'a>> {
+    redirect_to.set("/worlds");
+    let base = requested_base(index_manager, base).await?;
     let manifest = {
         let index = index_manager.index_for(&base).await?;
         Manifest::from_index_with_default_versions(&index)?

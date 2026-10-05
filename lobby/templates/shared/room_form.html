@@ -15,7 +15,7 @@
 
 {% match self.room_id %}
 {% when Some with (room_id) %}
-<form method="POST" action="{{ ty.as_route_base() }}/{{room_id}}" id="room-form">
+<form method="POST" action="{{ ty.as_route_base() }}/{{room_id}}{{ action_query }}" id="room-form">
 {% when None %}
 <form method="POST" id="room-form">
 {% endmatch %}
@@ -32,6 +32,37 @@
                 <input {{ ro }} type="datetime-local" id="close_date" name="room.close_date">
             {% else %}
                 <input {{ ro }} style="display: none" type="datetime-local" id="close_date" name="room.close_date">
+            {% endif %}
+
+            {% if let Some(base_select) = self.base_select %}
+                {# Not a field of this form: see `BaseSelect` #}
+                <label for="ap_version">Archipelago version:</label>
+                <div class="base-select-row">
+                {% match (base_select.locked.as_ref(), base_select.switch_url.as_ref()) %}
+                {% when (Some(reason), _) %}
+                    <select id="ap_version" disabled>
+                        {% for option in base_select.options %}
+                        <option {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <span class="base-select-hint">{{ reason }}</span>
+                {% when (None, Some(_)) %}
+                    <select {{ ro }} id="ap_version" name="to" form="base-form">
+                        {% for option in base_select.options %}
+                        <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <button {{ ro }} type="submit" form="base-form">Change version</button>
+                    <span class="base-select-hint">Changing it validates every YAML of the room again. You are shown what it does before anything happens.</span>
+                {% when (None, None) %}
+                    <select {{ ro }} id="ap_version" data-base-select>
+                        {% for option in base_select.options %}
+                        <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <span class="base-select-hint">Choose it first: it loads this form again, with the worlds of that version in the Apworlds tab.</span>
+                {% endmatch %}
+                </div>
             {% endif %}
 
             <label for="room_description">Description:</label>
@@ -129,9 +160,17 @@
     {% endif %}
 </form>
 
+{% if let Some(base_select) = self.base_select %}
+    {% if let Some(switch_url) = base_select.switch_url %}
+    {# What the selector of the Archipelago version and its button, above, belong to #}
+    <form method="POST" action="{{ switch_url }}" id="base-form"></form>
+    {% endif %}
+{% endif %}
+
 {% block scripts %}
     <script src="/static/js/room.js?{{ base.js_version}}"></script>
     <script src="/static/js/room_editor.js?{{ base.js_version}}"></script>
+    <script src="/static/js/base_select.js?{{ base.js_version}}"></script>
     <script>
         const closeDateEl = document.getElementById("close_date");
         closeDateEl.addEventListener("change", () => {

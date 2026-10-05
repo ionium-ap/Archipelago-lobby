@@ -17,6 +17,10 @@ The first start will also download all apworlds in the index, which might take a
 
 For anything beyond a local dev instance, see [Configuring a real deployment](#configuring-a-real-deployment) before bringing services up.
 
+## Stylesheets
+
+The lobby's stylesheets are the Sass files in `lobby/static/sass/`. They are compiled to CSS when the lobby is built, by its `build.rs`, and the CSS is served from the binary under `/static/css/`. There is no compiled CSS in the repository and nothing to install or run by hand: edit a `.sass` file and build. A file whose name starts with `_` is a partial and isn't compiled on its own.
+
 # Configuring a real deployment
 
 The example compose file ships with `changeme` placeholders for every secret. Before deploying:
@@ -134,7 +138,19 @@ docker compose --profile ap-0.6.8 up -d
 
 Not offering a base doesn't remove anything. A room that is on it keeps its pages and its YAMLs; with no worker for it, nothing new gets validated or generated there. `PRELOAD_OPTIONS_DEFS` preloads every base on offer.
 
-A new room is on the default base, or on the base of the template it is made from if that one is still offered. Nothing in the interface chooses or changes a room's base yet.
+## What a host sees
+
+With one base on offer, nothing to choose appears anywhere. With more:
+
+- **Making a room.** The form has an "Archipelago version" selector. It starts on the default base, or on the base of the template the room is made from if that one is still offered. Choosing another loads the form again, because the worlds of its Apworlds tab are those of one base.
+- **A room's page** carries a chip in the upper right corner of its details, reading `AP 0.6.8`. It is green when the room is on the default base, gold when it is on an older one, and white when it is on a newer one. Its tooltip says the same in words.
+- **Moving a room to another base** is done from its edit page, with the same selector and a "Change version" button. It is refused once the room has a generation. A room with no YAML moves at once. A room with YAMLs first shows what the move does, and moves when its owner confirms:
+  - a warning for each world the target base doesn't have, whose YAMLs become unsupported, and for each world the room pins to a release the target base doesn't have, with the release that would be used instead;
+  - a list of the worlds that simply get another release;
+  - after the move, every YAML of the room is validated again by the new base's workers. The room's choice of worlds and releases is kept as it is and read against the new base.
+- **Templates** can name a base, or leave it to the default when a room is made.
+- **The worlds page and the options pages** have the selector too, and `/worlds` takes `?base=` like the options pages.
+- **The API** gives a room's base as `ap_version`, in `/api/room/<id>` and in `/api/rooms`.
 
 ## Upgrading from a lobby without bases
 

@@ -66,6 +66,8 @@
 {% when None %}
 {% endmatch %}
 
+<div class="chip-corner">
+<span class="base-chip base-chip-{{ base_chip.standing }}" title="{{ base_chip.title }}">{{ base_chip.label }}</span>
 <table class="styled" id="room-info">
     <tr>
         <td>Room name</td>
@@ -93,6 +95,7 @@
     </tr>
     {% endif %}
 </table>
+</div>
 
 <div id="filter-popup" style="display: none">
     <form action="javascript:void(0);">

@@ -15,7 +15,7 @@ use rocket::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    db::{self, BundleId, Json as DbJson, RoomId, Yaml, YamlId},
+    db::{self, ApVersion, BundleId, Json as DbJson, RoomId, Yaml, YamlId},
     error::{ApiError, ApiResult, WithContext, WithStatus},
     index_manager::IndexManager,
     jobs::{OptionsGenQueue, YamlValidationQueue},
@@ -68,6 +68,8 @@ pub struct RoomInfo {
     description: String,
     locked: bool,
     author_id: i64,
+    /// The Archipelago version the room is on. `/api/games` takes it as its `base`.
+    ap_version: ApVersion,
     yamls: Vec<YamlInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     server_info: Option<RoomServerInfo>,
@@ -85,6 +87,7 @@ pub struct RoomListEntry {
     close_date: i64,
     locked: bool,
     author_id: i64,
+    ap_version: ApVersion,
     hashtags: Vec<String>,
     room_url: String,
 }
@@ -143,6 +146,7 @@ pub(crate) async fn list_open_rooms(
             close_date: room.settings.close_date.and_utc().timestamp(),
             locked: room.settings.locked,
             author_id: room.settings.author_id,
+            ap_version: room.ap_version,
             room_url: room.settings.room_url,
         })
         .collect();
@@ -189,6 +193,7 @@ pub(crate) async fn room_info(
         description: room.settings.description,
         locked: room.settings.locked,
         author_id: room.settings.author_id,
+        ap_version: room.ap_version,
         yamls: yamls
             .into_iter()
             .map(|(yaml, discord_handle)| YamlInfo {

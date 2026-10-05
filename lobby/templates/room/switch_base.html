@@ -1,0 +1,105 @@
+{% extends "room/_base.html" %}
+
+{# Whitespace around a value is dropped unless the tag asks to keep it with `+`. #}
+
+{% block menu %}
+    {% let room_url = format!("/room/{}", self.room.id) %}
+    {% call menu::menu_item("Room", "", room_url, false, "") %}{% endcall %}
+    {% let edit_url = format!("/edit-room/{}", self.room.id) %}
+    {% call menu::menu_item("Edit room", "", edit_url, true, "editButton") %}{% endcall %}
+{% endblock %}
+
+{% block main %}
+<table class="styled" id="room-info">
+    <tr>
+        <td>Room name</td>
+        <td>{{ room.settings.name }}</td>
+    </tr>
+    <tr>
+        <td>Archipelago version</td>
+        <td>{{ room.ap_version +}} <i class="fa fa-arrow-right"></i> <strong>{{ target }}</strong></td>
+    </tr>
+</table>
+
+<p class="message info">
+    {% if room.settings.yaml_validation %}
+        Moving the room to Archipelago {{+ target +}} validates
+        {%+ if yaml_count == 1 %}its YAML{% else %}all {{+ yaml_count +}} of its YAMLs{% endif +%}
+        again, with Archipelago {{+ target }}. A YAML that is valid now can fail there, and it is
+        then up to its player to fix it.
+    {% else %}
+        The room doesn't validate its YAMLs, so moving it to Archipelago {{+ target +}} checks
+        nothing. What follows is what would be used to generate.
+    {% endif %}
+</p>
+
+{% if !report.warnings.is_empty() %}
+<div class="warning base-switch-warning">
+    <p><i class="fa fa-triangle-exclamation"></i> This is not what the players of this room signed up for:</p>
+    <ul>
+    {% for change in report.warnings %}
+        <li>
+        {% match change.kind %}
+        {% when crate::base_switch::ChangeKind::Lost with { from } %}
+            <strong>{{ change.game }}</strong> is not part of Archipelago {{+ target +}} here.
+            {%+ if change.yamls == 1 %}Its YAML becomes{% else %}Its {{+ change.yamls +}} YAMLs become{% endif +%}
+            unsupported. The room uses {{+ from +}} now.
+        {% when crate::base_switch::ChangeKind::PinNotAvailable with { pinned, to } %}
+            <strong>{{ change.game }}</strong> is pinned to {{+ pinned }}, which Archipelago {{+ target +}}
+            doesn't have.
+            {%+ if change.yamls == 1 %}Its YAML{% else %}Its {{+ change.yamls +}} YAMLs{% endif +%}
+            would be validated with <strong>{{ to }}</strong> instead.
+        {% else %}
+        {% endmatch %}
+        </li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if !report.changes.is_empty() %}
+<table class="styled">
+    <thead>
+        <tr>
+            <th>World</th>
+            <th>YAMLs</th>
+            <th>Now</th>
+            <th>On Archipelago {{+ target }}</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for change in report.changes %}
+        <tr>
+            <td>{{ change.game }}</td>
+            <td>{{ change.yamls }}</td>
+            {% match change.kind %}
+            {% when crate::base_switch::ChangeKind::Moved with { from, to } %}
+                <td>{{ from }}</td>
+                <td>{{ to }}</td>
+            {% when crate::base_switch::ChangeKind::Gained with { to } %}
+                <td>Not supported</td>
+                <td>{{ to }}</td>
+            {% else %}
+                <td></td>
+                <td></td>
+            {% endmatch %}
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if report.unchanged > 0 %}
+<p>
+    {% if report.unchanged == 1 %}One world with YAMLs keeps{% else %}{{ report.unchanged +}} worlds with YAMLs keep{% endif +%}
+    the release the room uses now.
+</p>
+{% endif %}
+
+<form method="POST" action="/edit-room/{{ room.id }}/base" id="confirm-base-form">
+    <input type="hidden" name="to" value="{{ target }}">
+    <input type="hidden" name="confirmed" value="true">
+    <button class="validation-button">Move the room to Archipelago {{+ target }}</button>
+    <a class="button-emulator" href="/edit-room/{{ room.id }}">Keep it on {{+ room.ap_version }}</a>
+</form>
+{% endblock %}

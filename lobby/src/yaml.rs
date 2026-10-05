@@ -527,6 +527,23 @@ fn should_revalidate_yaml(
     false
 }
 
+/// The names of the worlds a YAML can roll: the one it names, or each one it gives a weight.
+/// None for a YAML that can't be read anymore.
+pub fn games_of_yaml(yaml: &Yaml) -> Vec<String> {
+    let Ok(parsed) = serde_saphyr::from_str::<YamlFile>(yaml.current_content()) else {
+        return vec![];
+    };
+
+    match parsed.game {
+        YamlGame::Name(name) => vec![name],
+        YamlGame::Map(games) => games
+            .into_iter()
+            .filter(|(_, weight)| *weight != 0.)
+            .map(|(game, _)| game)
+            .collect(),
+    }
+}
+
 #[tracing::instrument(skip(index_manager, yaml_validation_queue, conn), fields(yaml_id = %yaml.id, room_id = %room.id))]
 pub async fn queue_yaml_validation(
     yaml: &Yaml,

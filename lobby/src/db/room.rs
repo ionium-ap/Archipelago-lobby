@@ -204,6 +204,21 @@ pub async fn update_room_manifest(
     Ok(())
 }
 
+/// Moves a room to another Archipelago version. What the room's YAMLs were validated with
+/// stops meaning anything, so whoever calls this has them validated again.
+#[tracing::instrument(skip(conn))]
+pub async fn update_room_ap_version(
+    room_id: RoomId,
+    ap_version: &ApVersion,
+    conn: &mut AsyncPgConnection,
+) -> Result<()> {
+    diesel::update(rooms::table.find(room_id))
+        .set(rooms::ap_version.eq(ap_version))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 #[tracing::instrument(skip(conn))]
 pub async fn delete_room(room_id: RoomId, conn: &mut AsyncPgConnection) -> Result<()> {
     diesel::delete(rooms::table)

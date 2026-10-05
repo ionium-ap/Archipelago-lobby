@@ -1511,3 +1511,86 @@ form:has(#apworld)
 
       &:hover
         background: hsla(0, 0%, 100%, 0.1)
+
+/* == ARCHIPELAGO VERSION == */
+
+// The chip that says which Archipelago version a room is on, laid over the upper right corner
+// of whatever `.chip-corner` wraps. A pill of border and text, the shape of the chips on the
+// tracker page of puna, with the page's own ground behind it so that the border of what it
+// sits on doesn't run through the text.
+//
+// The tint says how the room's version compares with the one a new room gets. It is a second
+// signal: the chip's text is the version, and its title says the comparison in words.
+// These three are picked for this page's dark ground, the only one there is.
+.chip-corner
+  position: relative
+
+.base-chip
+  position: absolute
+  top: -0.75em
+  right: 0.75em
+  z-index: 1
+  padding: 0.1em 0.65em
+  font-size: 0.78em
+  font-weight: bold
+  line-height: 1.5
+  white-space: nowrap
+  cursor: default
+  border: 1px solid currentColor
+  border-radius: 999px
+  background-color: #12202c
+  background-image: url("../images/background.png")
+  text-shadow: none
+
+// On the version new rooms get
+.base-chip-current
+  color: #4cc264
+
+// On an older one
+.base-chip-behind
+  color: #f0c86a
+
+// On a newer one
+.base-chip-ahead
+  color: white
+
+// The selector of an Archipelago version in the room and template forms, with what goes with
+// it on one line: it isn't a field of the form, and what choosing does is said beside it.
+.base-select-row
+  display: flex
+  flex-wrap: wrap
+  align-items: center
+  gap: 0.75em
+  margin-bottom: 1em
+
+  select
+    width: auto
+    margin: 0
+
+.base-select-hint
+  flex: 1 1 20em
+  font-size: 0.85em
+  color: hsl(0, 0%, 75%)
+
+// The same selector on the pages that are about one version
+select.base-select
+  width: auto
+  margin: 0 0.5em 0 0
+
+// What the owner of a room has to read before moving it to another version
+.base-switch-warning
+  p
+    margin: 0 0 0.5em 0
+
+  ul
+    margin: 0
+    padding-left: 1.5em
+
+  li
+    margin-bottom: 0.4em
+    font-weight: normal
+
+#confirm-base-form
+  display: flex
+  gap: 0.75em
+  margin: 1.5em 0

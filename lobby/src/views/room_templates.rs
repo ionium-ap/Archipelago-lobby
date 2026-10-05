@@ -1,7 +1,7 @@
 use crate::db::Room;
 use crate::error::Result;
 use crate::{
-    db::{self, NewRoomTemplate, RoomTemplate, RoomTemplateId},
+    db::{self, ApVersion, NewRoomTemplate, RoomTemplate, RoomTemplateId},
     error::RedirectTo,
     index_manager::IndexManager,
     session::LoggedInSession,
@@ -11,14 +11,18 @@ use askama::Template;
 use askama_web::WebTemplate;
 use rocket::FromForm;
 use rocket::{form::Form, get, post, response::Redirect, State};
+use semver::Version;
 use std::str::FromStr;
 
 use crate::{Context, LobbyConfig, TplContext};
 
 use super::manifest_editor::manifest_from_form;
+use super::options_gen::requested_base;
 use super::room_settings::{
-    parse_date, validate_room_form, RoomSettingsBuilder, RoomSettingsForm, RoomSettingsType,
+    parse_date, validate_room_form, BaseSelect, RoomSettingsBuilder, RoomSettingsForm,
+    RoomSettingsType,
 };
+use super::utils::{base_options, BaseOption};
 
 #[derive(Debug, FromForm)]
 pub struct CreateTplForm<'a> {
@@ -76,15 +80,65 @@ async fn list_templates<'a>(
     })
 }
 
-#[get("/room-templates/create")]
+/// The Archipelago version a template names, going by the `base` its form asks for. Nothing
+/// asked leaves it as it is, an empty `base` is a template that names no version, and a
+/// version has to be on offer unless it is the one the template names already.
+async fn template_base(
+    index_manager: &IndexManager,
+    base: Option<&str>,
+    current: Option<&Version>,
+) -> anyhow::Result<Option<Version>> {
+    match base {
+        None => Ok(current.cloned()),
+        Some("") => Ok(None),
+        Some(base) => match current {
+            Some(current) if base == current.to_string() => Ok(Some(current.clone())),
+            _ => Ok(Some(requested_base(index_manager, Some(base)).await?)),
+        },
+    }
+}
+
+/// The selector of a template form, when there is something to choose
+async fn template_base_select(
+    index_manager: &IndexManager,
+    named: Option<&Version>,
+) -> Option<BaseSelect> {
+    let offered = index_manager.offered_bases().await;
+    if offered.len() < 2 && named.is_none() {
+        return None;
+    }
+
+    let mut options = vec![BaseOption {
+        value: String::new(),
+        label: "The default one when a room is made".to_string(),
+        selected: named.is_none(),
+    }];
+    options.extend(base_options(&offered, named));
+
+    Some(BaseSelect {
+        options,
+        switch_url: None,
+        locked: None,
+    })
+}
+
+#[get("/room-templates/create?<base>")]
 #[tracing::instrument(skip_all)]
 async fn create_template<'a>(
+    base: Option<&str>,
     index_manager: &State<IndexManager>,
     session: LoggedInSession,
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
+    redirect_to: &RedirectTo,
 ) -> Result<EditRoomTemplateTpl<'a>> {
-    let index = index_manager.default_index().await;
+    redirect_to.set("/room-templates/create");
+    // The form shows the worlds of the version the template names, or of the default one.
+    // Choosing another loads it again with `base`, and it is posted with the same `base`.
+    let named = template_base(index_manager, base, None).await?;
+    let ap_version = index_manager.base_or_default(named.as_ref()).await;
+    let index = index_manager.index_for(&ap_version).await?;
+    let base_select = template_base_select(index_manager, named.as_ref()).await;
 
     let base = TplContext::from_session(
         "room-templates",
@@ -100,14 +154,16 @@ async fn create_template<'a>(
             base.clone(),
             &index,
             RoomSettingsType::Template,
-        )?,
+        )?
+        .with_base_select(base_select),
         base,
     })
 }
 
-#[post("/room-templates/create", data = "<tpl_form>")]
+#[post("/room-templates/create?<base>", data = "<tpl_form>")]
 #[tracing::instrument(skip_all)]
 async fn create_tpl_submit<'a>(
+    base: Option<&str>,
     redirect_to: &RedirectTo,
     ctx: &State<Context>,
     index_manager: &State<IndexManager>,
@@ -117,8 +173,10 @@ async fn create_tpl_submit<'a>(
     redirect_to.set("/room-templates/create");
 
     validate_tpl_form(&mut tpl_form)?;
+    let named = template_base(index_manager, base, None).await?;
     let room_manifest = {
-        let index = index_manager.default_index().await;
+        let ap_version = index_manager.base_or_default(named.as_ref()).await;
+        let index = index_manager.index_for(&ap_version).await?;
         manifest_from_form(&tpl_form.room.me, &index)
     }?;
 
@@ -150,8 +208,7 @@ async fn create_tpl_submit<'a>(
         meta_file: tpl_form.room.meta_file.clone(),
         is_bundle_room: tpl_form.room.is_bundle_room,
         locked: tpl_form.room.locked,
-        // A new template names no Archipelago version: its rooms get the default one
-        ap_version: None,
+        ap_version: Some(named.map(ApVersion::from)),
     };
 
     let mut conn = ctx.db_pool.get().await?;
@@ -160,15 +217,18 @@ async fn create_tpl_submit<'a>(
     Ok(Redirect::to("/room-templates"))
 }
 
-#[get("/room-templates/<tpl_id>")]
+#[get("/room-templates/<tpl_id>?<base>")]
 #[tracing::instrument(skip_all)]
 async fn edit_template<'a>(
     tpl_id: RoomTemplateId,
+    base: Option<&str>,
     index_manager: &State<IndexManager>,
     ctx: &State<Context>,
     session: LoggedInSession,
     lobby_config: &State<LobbyConfig>,
+    redirect_to: &RedirectTo,
 ) -> Result<EditRoomTemplateTpl<'a>> {
+    redirect_to.set(&format!("/room-templates/{tpl_id}"));
     let mut conn = ctx.db_pool.get().await?;
     let template = db::get_room_template_by_id(tpl_id, &mut conn).await?;
     let is_my_template = template.settings.author_id == session.user_id();
@@ -176,11 +236,20 @@ async fn edit_template<'a>(
         Err(anyhow!("You are not allowed to edit this template"))?;
     }
 
-    // A template's manifest is about the worlds of the Archipelago version its rooms get
-    let ap_version = index_manager
-        .base_or_default(template.ap_version.as_deref())
-        .await;
+    // A template's manifest is about the worlds of the Archipelago version its rooms get.
+    // `base` is a version chosen in the form and not saved yet.
+    let named = template_base(index_manager, base, template.ap_version.as_deref()).await?;
+    let ap_version = index_manager.base_or_default(named.as_ref()).await;
     let index = index_manager.index_for(&ap_version).await?;
+    let base_select = template_base_select(index_manager, named.as_ref()).await;
+    // Saving says which version, even when that is none
+    let action_query = format!(
+        "?base={}",
+        named
+            .as_ref()
+            .map(|base| base.to_string().replace('+', "%2B"))
+            .unwrap_or_default()
+    );
 
     let base = TplContext::from_session(
         "template",
@@ -197,16 +266,19 @@ async fn edit_template<'a>(
             index.clone(),
             template,
         )
-        .read_only(!is_my_template),
+        .read_only(!is_my_template)
+        .with_base_select(base_select)
+        .with_action_query(action_query),
         base,
     })
 }
 
-#[post("/room-templates/<tpl_id>", data = "<tpl_form>")]
+#[post("/room-templates/<tpl_id>?<base>", data = "<tpl_form>")]
 #[tracing::instrument(skip(redirect_to, tpl_form, index_manager, ctx, session))]
 async fn edit_tpl_submit<'a>(
     redirect_to: &RedirectTo,
     tpl_id: RoomTemplateId,
+    base: Option<&str>,
     mut tpl_form: Form<CreateTplForm<'a>>,
     ctx: &State<Context>,
     index_manager: &State<IndexManager>,
@@ -223,10 +295,9 @@ async fn edit_tpl_submit<'a>(
 
     validate_tpl_form(&mut tpl_form)?;
 
+    let named = template_base(index_manager, base, tpl.ap_version.as_deref()).await?;
     let room_manifest = {
-        let ap_version = index_manager
-            .base_or_default(tpl.ap_version.as_deref())
-            .await;
+        let ap_version = index_manager.base_or_default(named.as_ref()).await;
         let index = index_manager.index_for(&ap_version).await?;
         manifest_from_form(&tpl_form.room.me, &index)
     }?;
@@ -257,7 +328,7 @@ async fn edit_tpl_submit<'a>(
         meta_file: tpl_form.room.meta_file.clone(),
         is_bundle_room: tpl_form.room.is_bundle_room,
         locked: tpl_form.room.locked,
-        ap_version: None, // (Skips updating that field)
+        ap_version: Some(named.map(ApVersion::from)),
     };
 
     db::update_room_template(&new_tpl, &mut conn).await?;
