@@ -25,6 +25,9 @@ impl PartialEq<&str> for AllHosts {
     }
 }
 
+// Every download goes through this client. Its retries are immediate, reqwest has no backoff
+// between them, so they cover a dropped connection or a one-off 5xx but not a server that
+// stays unwell for a moment.
 fn retry_client() -> Client {
     Client::builder()
         .retry(

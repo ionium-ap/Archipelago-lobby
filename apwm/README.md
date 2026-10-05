@@ -109,7 +109,17 @@ version, or `"supported"` for a core world.
 Declaring a base changes no world by itself: the previous index is compared as if it had always
 had that base, so only real differences show up, such as a world entering core on it.
 
+The index's CI reads this file to decide what to test. It runs its apworld jobs once per base,
+and the run for a base takes the versions whose `added_on` lists that base. To link an added
+version to its download, it tells a core world from a custom one by the `"supported"` checksum,
+not by the world's top-level `supported` flag, which only describes the legacy base.
+
 ### `lint`
+
+The index's CI runs this on every pull request, as its `apwm-lint` job, and an error fails the
+pull request. It is the only check of the index files' shape there: the script that used to
+look for a misspelled `[version]` table and for a world with no versions is gone, since both are
+errors here.
 
 An index that doesn't parse is reported as such. On one that does, the errors are:
 
@@ -130,7 +140,10 @@ that matches no declared base, and a `[bases]` table that leaves out the legacy 
 
 It can't tell whether a release really runs on the bases it claims, or whether a world marked
 `supported` is in fact a core world of the legacy base. Those need the release to be loaded on
-each base.
+each base, which is what the index's CI does: when an added release passes on one base and
+fails on another, its comment on the pull request names the `min_ap_version` or
+`max_ap_version` that would fit. Nothing yet compares a release's own `archipelago.json` with
+the constraints the index gives it.
 
 ## Several Archipelago versions
 

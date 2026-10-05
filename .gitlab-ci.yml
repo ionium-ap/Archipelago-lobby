@@ -21,8 +21,8 @@
 # moving tags are branch-gated: main pushes :latest, ionium-dev pushes :dev,
 # and every other branch pushes no moving tag at all.
 #
-# ap-worker is built once per Archipelago base, so its tags also carry the
-# base. See the image-ap-worker job.
+# ap-worker is built once per Archipelago base, so its tags carry the base,
+# and its moving tag follows the newest one. See the image-ap-worker job.
 #
 # Every job's `changes:` filter includes .gitlab-ci.yml, the build recipe
 # itself. Otherwise a fix to this file can only be deployed via a manual
@@ -250,8 +250,12 @@ image-community-ap-tools:
 #   :sha-<short sha>-<base>   every branch
 #   :<base>                   main
 #   :<base>-dev               ionium-dev
-# UNSUFFIXED_BASE also keeps the tags that carry no base: :sha-<short sha>
-# on every branch, plus :latest or :dev.
+# NEWEST_BASE also gets the branch's moving tag, :latest or :dev. No tag
+# without a base names a commit: there is no :sha-<short sha> for this image.
+#
+# Adding a base: add it to the matrix, and move NEWEST_BASE if it is newer.
+# Nothing may depend on :latest staying on one Archipelago version, so
+# anything that needs a given base pulls :<base> or :sha-<short sha>-<base>.
 image-ap-worker:
   <<: *buildah-build
   parallel:
@@ -266,7 +270,7 @@ image-ap-worker:
     - if: '$CI_PIPELINE_SOURCE == "web"'
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/ap-worker"
-    - UNSUFFIXED_BASE="0.6.7"
+    - NEWEST_BASE="0.6.8"
     - BASE_TAG="sha-$CI_COMMIT_SHORT_SHA-$AP_BASE"
     - buildah build
         --build-arg SRC=.
@@ -287,7 +291,7 @@ image-ap-worker:
         buildah push "$IMAGE:$VERSION_TAG"
       fi
     - |
-      if [ "$AP_BASE" = "$UNSUFFIXED_BASE" ]; then
-        buildah tag "$IMAGE:$BASE_TAG" "$IMAGE:sha-$CI_COMMIT_SHORT_SHA"
-        push_image "$IMAGE"
+      if [ "$AP_BASE" = "$NEWEST_BASE" ] && [ -n "$MOVING_TAG" ]; then
+        buildah tag "$IMAGE:$BASE_TAG" "$IMAGE:$MOVING_TAG"
+        buildah push "$IMAGE:$MOVING_TAG"
       fi

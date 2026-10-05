@@ -28,6 +28,11 @@ use crate::{Result, SubmissionConfig};
 pub struct RecordFuzzResultsRequest {
     pub task_id: String,
     pub pr_number: Option<i32>,
+    /// Names the series a result belongs to, along with the world: previous results are only
+    /// looked up among those with the same value. The index's CI sends the fuzz variant here,
+    /// and `<variant>@<base>` when fuzzing on an Archipelago base other than the legacy one, as
+    /// there is no column for the base. The legacy base keeps the bare variant so its results
+    /// stay comparable with the ones recorded before there were several bases.
     pub extra_args: Option<String>,
     pub results: Vec<FuzzResultInput>,
 }
