@@ -52,7 +52,7 @@ pub fn base_chip(room_base: &Version, default_base: &Version) -> BaseChip {
     let (standing, title) = match room_base.cmp(default_base) {
         std::cmp::Ordering::Equal => (
             "current",
-            format!("This room is on Archipelago {room_base}, as new rooms are."),
+            format!("This room is on Archipelago {room_base} (default)."),
         ),
         std::cmp::Ordering::Less => (
             "behind",

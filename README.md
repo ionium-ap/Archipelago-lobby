@@ -143,7 +143,7 @@ Not offering a base doesn't remove anything. A room that is on it keeps its page
 With one base on offer, nothing to choose appears anywhere. With more:
 
 - **Making a room.** The form has an "Archipelago version" selector. It starts on the default base, or on the base of the template the room is made from if that one is still offered. Choosing another loads the form again, because the worlds of its Apworlds tab are those of one base.
-- **A room's page** carries a chip in the upper right corner of its details, reading `AP 0.6.8`. It is green when the room is on the default base, gold when it is on an older one, and white when it is on a newer one. Its tooltip says the same in words.
+- **A room's page** carries a chip at the right end of the row with the room's name, reading `AP 0.6.8`. It is green when the room is on the default base, gold when it is on an older one, and white when it is on a newer one. Its tooltip says the same in words.
 - **Moving a room to another base** is done from its edit page, with the same selector and a "Change version" button. It is refused once the room has a generation. A room with no YAML moves at once. A room with YAMLs first shows what the move does, and moves when its owner confirms:
   - a warning for each world the target base doesn't have, whose YAMLs become unsupported, and for each world the room pins to a release the target base doesn't have, with the release that would be used instead;
   - a list of the worlds that simply get another release;

@@ -66,12 +66,10 @@
 {% when None %}
 {% endmatch %}
 
-<div class="chip-corner">
-<span class="base-chip base-chip-{{ base_chip.standing }}" title="{{ base_chip.title }}">{{ base_chip.label }}</span>
 <table class="styled" id="room-info">
     <tr>
         <td>Room name</td>
-        <td><span title="Organized by @{{author_name}}">{{ room.settings.name }}</span></td>
+        <td><span class="base-chip base-chip-{{ base_chip.standing }}" title="{{ base_chip.title }}">{{ base_chip.label }}</span><span title="Organized by @{{author_name}}">{{ room.settings.name }}</span></td>
     </tr>
     <tr>
         <td>Closing time</td>
@@ -95,7 +93,6 @@
     </tr>
     {% endif %}
 </table>
-</div>
 
 <div id="filter-popup" style="display: none">
     <form action="javascript:void(0);">
