@@ -27,7 +27,7 @@ use rocket_oauth2::OAuth2;
 use rocket_prometheus::PrometheusMetrics;
 use wq::rocket_routes::QueueTokens;
 
-use crate::index_manager::IndexManager;
+use crate::index_manager::{IndexManager, IndexSource};
 use crate::jobs::{
     get_generation_callback, get_options_gen_callback, get_yaml_validation_callback,
     GenerationOutDir, GenerationQueue, OptionsGenQueue, YamlValidationQueue,
@@ -47,6 +47,8 @@ pub mod jobs;
 pub mod otlp;
 pub mod schema;
 pub mod session;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub mod utils;
 pub mod views;
 pub mod yaml;
@@ -273,10 +275,15 @@ pub async fn main() -> crate::error::Result<()> {
         .register(Box::new(common::db::QUERY_HISTOGRAM.clone()))
         .expect("Failed to register query histogram");
 
-    let index_manager = IndexManager::new()?;
+    let index_manager =
+        IndexManager::new(IndexSource::from_env(), redis_pool.clone(), &valkey_url)?;
     if std::env::var("SKIP_APWORLDS_UPDATE").is_err() {
         index_manager.update().await?;
     }
+    // Every lobby process has its own copy of the index. From here on this one stays on the
+    // same commit of it as the others.
+    index_manager.join_other_processes().await?;
+    index_manager.start_following();
 
     // A worker names the Archipelago version it runs when it asks for a job, and only gets the
     // jobs of that partition. A job is enqueued in the partition of the room's version. The

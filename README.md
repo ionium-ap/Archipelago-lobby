@@ -82,7 +82,7 @@ The `redirect_uri` must exactly match a redirect URI registered in your Discord 
 
 ## Running more than one lobby process
 
-Several lobby processes can serve the same deployment, with one caveat about the index.
+Several lobby processes can serve the same deployment.
 
 | State | Where it lives | With several processes |
 |---|---|---|
@@ -90,7 +90,13 @@ Several lobby processes can serve the same deployment, with one caveat about the
 | Job queues, sessions | Valkey | Shared. A worker's result is handled by whichever process the worker is connected to. |
 | Option definitions for the options page | Valkey, for 24 hours | Shared. To drop them sooner, for example after fixing the options generator, delete the `options_def:*` keys. |
 | Downloaded apworlds | `APWORLDS_PATH` | Shared if the directory is. |
-| The parsed index | The memory of each process | **Not shared.** `/worlds/refresh` updates only the process that serves the request. Restart the others afterwards, or they keep validating against the old index. |
+| The index | A checkout of the index repository per process (`APWORLDS_INDEX_DIR`), read into its memory | Each process has its own, and they keep each other on the same commit, see below. Two processes must not share one `APWORLDS_INDEX_DIR`. |
+
+The process that serves `/worlds/refresh` loads the newest commit of the index, records it in Valkey under `index:announced`, and publishes it. Every other process loads that same commit when it hears of it, normally well within a second, and checks the key every 30 seconds in case it didn't hear. The open rooms are looked at once, by the process that served the request.
+
+A process that starts reads the newest commit, as it always did. If that is newer than the announced one, it announces it and the running processes follow, so restarting one process moves all of them. To see which commit a process is on, look for `Loaded the index at commit` in its log.
+
+If Valkey is unreachable, a refresh still updates the process that served it and then answers with an error, since the others were not told. They catch up within 30 seconds of Valkey coming back if the refresh is run again.
 
 # Archipelago versions
 

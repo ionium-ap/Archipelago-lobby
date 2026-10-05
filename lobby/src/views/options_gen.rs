@@ -937,58 +937,7 @@ pub fn routes() -> Vec<Route> {
 mod tests {
     use super::*;
     use crate::jobs::{get_options_gen_callback, OptionDef, OptionsGenResponse};
-    use std::{
-        net::TcpListener,
-        process::{Child, Command, Stdio},
-    };
-
-    struct ValkeyInstance {
-        port: u16,
-        process: Child,
-    }
-
-    impl Drop for ValkeyInstance {
-        fn drop(&mut self) {
-            let _ = self.process.kill();
-        }
-    }
-
-    impl ValkeyInstance {
-        fn url(&self) -> String {
-            format!("redis://127.0.0.1:{}?protocol=resp3", self.port)
-        }
-    }
-
-    fn start_valkey() -> ValkeyInstance {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let process = Command::new("valkey-server")
-            .arg("--port")
-            .arg(port.to_string())
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("Failed to start valkey-server, is it in the PATH?");
-        let instance = ValkeyInstance { port, process };
-
-        for _ in 0..100 {
-            let client = redis::Client::open(instance.url()).unwrap();
-            if client.get_connection().is_ok() {
-                return instance;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        panic!("Failed to start valkey on port {}", instance.port);
-    }
-
-    fn redis_pool(valkey: &ValkeyInstance) -> RedisPool {
-        deadpool_redis::Config::from_url(valkey.url())
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .unwrap()
-    }
+    use crate::test_utils::{redis_pool, start_valkey, ValkeyInstance};
 
     /// What one lobby process holds of the options generator
     async fn lobby_process(valkey: &ValkeyInstance) -> (OptionsGenQueue, OptionsCache) {

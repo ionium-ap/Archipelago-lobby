@@ -126,6 +126,10 @@ async fn refresh_worlds(
 ) -> Result<()> {
     let old_index = index_manager.snapshot().await;
     index_manager.update().await?;
+    // The other lobby processes load the same commit when they hear of it. The rooms are
+    // looked at once, here: what is found goes to the database and the queues, which they
+    // all share. A failure to announce is only reported once that is done.
+    let announced = index_manager.announce().await;
 
     let mut conn = ctx.db_pool.get().await?;
 
@@ -161,6 +165,9 @@ async fn refresh_worlds(
         )
         .await?;
     }
+
+    announced
+        .context("The index was refreshed here, but the other lobby processes weren't told")?;
 
     Ok(())
 }
