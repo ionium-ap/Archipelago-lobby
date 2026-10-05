@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
+use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rocket::{State, routes, serde::json::Json};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use uuid::Uuid;
 use crate::Config;
 use crate::auth::{AdminSession, LoggedInSession};
 use crate::error;
+use crate::guards::LobbyRoom;
 use crate::review::Role;
 use crate::review::db;
 
@@ -59,45 +61,65 @@ async fn remove_room_preset(
     Ok(())
 }
 
-#[rocket::get("/games")]
-async fn proxy_games(
-    _session: LoggedInSession,
-    config: &State<Config>,
-) -> crate::error::Result<Json<serde_json::Value>> {
-    let client = reqwest::Client::new();
-    let url = config.lobby_root_url.join("/api/games")?;
-    let resp = client
+/// Where the lobby answers about its games, for a room on Archipelago `base`.
+///
+/// A lobby can offer several Archipelago versions, each with its own worlds and its own
+/// options for them, and a room is on one. Asked without a `base` the lobby answers for its
+/// default version, which need not be the room's. `None` is a lobby from before rooms had a
+/// version: it has only one, and doesn't know the parameter.
+fn lobby_games_url(lobby_root_url: &Url, path: &str, base: Option<&str>) -> anyhow::Result<Url> {
+    let mut url = lobby_root_url.join(path)?;
+    if let Some(base) = base {
+        url.query_pairs_mut().append_pair("base", base);
+    }
+
+    Ok(url)
+}
+
+/// Fetches something about the lobby's games as the room of this instance sees them
+async fn fetch_from_lobby_games(
+    config: &Config,
+    room: &LobbyRoom,
+    path: &str,
+) -> crate::error::Result<serde_json::Value> {
+    let url = lobby_games_url(&config.lobby_root_url, path, room.ap_version.as_deref())?;
+    let resp = reqwest::Client::new()
         .get(url)
         .header("x-api-key", &config.lobby_api_key)
         .send()
         .await?;
     if !resp.status().is_success() {
-        return Err(anyhow!("Failed to fetch games: {}", resp.status()).into());
+        // The lobby says why in the body, for instance that it doesn't offer the room's
+        // Archipelago version anymore
+        let status = resp.status();
+        let reason = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("The lobby answered {path} with {status}: {reason}").into());
     }
-    let data: serde_json::Value = resp.json().await?;
-    Ok(Json(data))
+
+    Ok(resp.json().await?)
+}
+
+#[rocket::get("/games")]
+async fn proxy_games(
+    _session: LoggedInSession,
+    room: LobbyRoom,
+    config: &State<Config>,
+) -> crate::error::Result<Json<serde_json::Value>> {
+    Ok(Json(
+        fetch_from_lobby_games(config, &room, "/api/games").await?,
+    ))
 }
 
 #[rocket::get("/games/<apworld>/options")]
 async fn proxy_game_options(
     _session: LoggedInSession,
+    room: LobbyRoom,
     apworld: &str,
     config: &State<Config>,
 ) -> crate::error::Result<Json<serde_json::Value>> {
-    let client = reqwest::Client::new();
-    let url = config
-        .lobby_root_url
-        .join(&format!("/api/games/{}/options", apworld))?;
-    let resp = client
-        .get(url)
-        .header("x-api-key", &config.lobby_api_key)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("Failed to fetch game options: {}", resp.status()).into());
-    }
-    let data: serde_json::Value = resp.json().await?;
-    Ok(Json(data))
+    let path = format!("/api/games/{}/options", apworld);
+
+    Ok(Json(fetch_from_lobby_games(config, &room, &path).await?))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -430,4 +452,54 @@ pub fn routes() -> Vec<rocket::Route> {
         add_note,
         delete_note,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url(path: &str, base: Option<&str>) -> String {
+        let root: Url = "https://lobby.example/".parse().unwrap();
+
+        lobby_games_url(&root, path, base).unwrap().to_string()
+    }
+
+    #[test]
+    fn test_games_are_asked_for_the_version_of_the_room() {
+        assert_eq!(
+            url("/api/games", Some("0.6.8")),
+            "https://lobby.example/api/games?base=0.6.8"
+        );
+        assert_eq!(
+            url("/api/games/apquest/options", Some("0.6.8")),
+            "https://lobby.example/api/games/apquest/options?base=0.6.8"
+        );
+        // A `+` would be read as a space on the other side
+        assert_eq!(
+            url("/api/games", Some("0.7.0-rc1+build")),
+            "https://lobby.example/api/games?base=0.7.0-rc1%2Bbuild"
+        );
+    }
+
+    #[test]
+    fn test_lobby_without_versions_is_asked_as_before() {
+        assert_eq!(url("/api/games", None), "https://lobby.example/api/games");
+    }
+
+    // What `/api/room/<id>` of the lobby answers, cut down to what is read here
+    #[test]
+    fn test_room_of_the_lobby_says_its_version_or_not() {
+        let room: LobbyRoom = serde_json::from_str(
+            r#"{"id": "00000000-0000-0000-0000-0000000000a1", "name": "Room", "close_date": "2026-10-20T12:00:00",
+                "description": "", "locked": false, "author_id": 42, "ap_version": "0.6.8", "yamls": []}"#,
+        )
+        .unwrap();
+        assert_eq!(room.ap_version.as_deref(), Some("0.6.8"));
+
+        let room: LobbyRoom = serde_json::from_str(
+            r#"{"id": "00000000-0000-0000-0000-0000000000a1", "name": "Room", "yamls": []}"#,
+        )
+        .unwrap();
+        assert_eq!(room.ap_version, None);
+    }
 }

@@ -35,6 +35,9 @@ pub struct SlotPasswords(pub Vec<SlotPasswordInfo>);
 pub struct LobbyRoom {
     pub id: Uuid,
     pub name: String,
+    /// The Archipelago version the room is on. A lobby from before rooms had one doesn't say.
+    #[serde(default)]
+    pub ap_version: Option<String>,
     pub yamls: Vec<YamlInfo>,
 }
 
