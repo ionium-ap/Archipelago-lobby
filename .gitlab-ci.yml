@@ -74,8 +74,25 @@ stages:
     paths:
       - target/
       - .cargo/
-  variables:
-    CARGO_HOME: $CI_PROJECT_DIR/.cargo
+
+# What a job that compiles asks the runner for. A map merged into a job's `variables:`, not
+# a job anchor, because a job that declares its own `variables:` replaces an inherited one
+# whole. YAML's `<<` does not merge maps in depth.
+#
+# The CPU limit is the build's parallelism: cargo runs one compiler per core of its CPU
+# quota, and the quota comes from the limit. The request matches it so that the eight cores
+# are reserved, and the scheduler doesn't put several such jobs on a node that can't run them.
+# The runner's defaults are a request of half a core and a limit of 2.
+#
+# These are the most the k8s runner accepts. A value above its ceiling fails the job before
+# the script runs. The ceilings are the *_overwrite_max_allowed keys in the runner's own
+# configuration; without those keys the runner would ignore these variables without a word.
+# The names are fixed by the runner's Kubernetes executor.
+.k8s-resources: &k8s-resources
+  KUBERNETES_CPU_REQUEST: "8"
+  KUBERNETES_MEMORY_REQUEST: "4Gi"
+  KUBERNETES_CPU_LIMIT: "8"
+  KUBERNETES_MEMORY_LIMIT: "8Gi"
 
 .cargo-build: &cargo-build
   stage: rust-build
@@ -84,6 +101,10 @@ stages:
   tags:
     - linux
     - k8s
+  variables:
+    <<: *k8s-resources
+    # Goes with the .cargo/ path of the cache.
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends pkg-config libssl-dev libpq-dev git ca-certificates mold

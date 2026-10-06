@@ -19,10 +19,13 @@ serde_path_to_error = "0.1.16"
 git2 = { version = "0.20.1" }
 sha2 = "0.10.8"
 tempfile = "3.10.1"
-tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread", "time"] }
 toml = "0.9"
 walkdir = "2.5.0"
 zip = "7.0.0"
+
+[dev-dependencies]
+tokio = { version = "1.37.0", features = ["test-util"] }
 
 [features]
 cli = ["dep:clap", "dep:env_logger"]

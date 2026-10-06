@@ -98,6 +98,18 @@ Built with the `cli` feature. Every subcommand takes the directory holding `inde
 | `install -i <index> -a <apworlds dir> -d <dir> [--base <version>]` | Copies the latest release of each world for a base, the legacy one by default. |
 | `lint -i <index>` | Reports what would break the lobbies reading this index. Exits with 1 on any error. |
 
+### Downloads
+
+A download that fails in a way that may pass is tried again, up to 3 more times: after 2
+seconds, then 4, then 8. That covers a request that didn't get through, a 5xx answer and a body
+that stopped short. Anything else, such as a 404 or a checksum that doesn't match, fails at
+once. The numbers are constants in `src/index/world.rs`; with more retries the wait keeps
+doubling up to 16 seconds. The lobby downloads through the same code.
+
+A release that still can't be downloaded is logged as skipped and left out, and the command
+goes on and exits with 0. For `update` that means a lock without that release's checksum, with
+nothing but the log to say why.
+
 ### `changes.json`
 
 For each world that changed, `added_versions` and `removed_versions` list the versions that

@@ -186,6 +186,8 @@ CI pushes these `ap-worker` tags:
 
 `latest` and `dev` change Archipelago version whenever a base is added, so nothing that needs a given version should pull them. Unlike the other images, `ap-worker` has no `sha-<short sha>` tag without a base.
 
+Anything on Kubernetes that runs a tag that moves (`<base>`, `<base>-dev`, `latest`, `dev`) has to ask for the image to be pulled every time. For every tag but `latest` the default is to pull only when the node doesn't have the tag yet, so a node keeps running the image it has however often the tag moves. What that looks like is a bug that was fixed and is still there. The index's CI ran into it with `ap-checker:<base>` and its jobs now set `pull_policy: always`. The lobby's own deployments pin `sha-` tags, which never move.
+
 ## Who builds on these images
 
 - **The lobby's own deployments** pin `ap-lobby:sha-<short sha>` and, for each worker, `ap-worker:sha-<short sha>-<base>` of the same commit. CI builds every image for a commit or none of them, so a commit that has one has them all. A commit that changes nothing an image is made from, such as this README, has none.
