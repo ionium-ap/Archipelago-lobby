@@ -178,8 +178,9 @@ impl Display for RoomSettingsType {
 ///
 /// The worlds of the form's "Apworlds" tab are those of one version, so choosing another one
 /// can't be a field of the form like the others. For a room that exists it is a request of its
-/// own, which has consequences for the YAMLs in the room. For a room or a template being
-/// made, it loads the form again for the chosen version.
+/// own, which has consequences for the YAMLs in the room: it has a tab of the edit page to
+/// itself, with its own button, where the form's button is hidden. For a room or a template
+/// being made, it is in the form's first tab and loads the form again for the chosen version.
 pub struct BaseSelect {
     pub options: Vec<BaseOption>,
     /// Where choosing is posted to, for a room that exists

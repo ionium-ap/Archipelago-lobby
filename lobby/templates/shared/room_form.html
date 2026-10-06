@@ -35,34 +35,20 @@
             {% endif %}
 
             {% if let Some(base_select) = self.base_select %}
-                {# Not a field of this form: see `BaseSelect` #}
+                {# A room or a template that is being made chooses its version here. It is
+                   not a field of this form: see `BaseSelect`. A room that exists is moved
+                   from a tab of its own, further down. #}
+                {% if base_select.switch_url.is_none() %}
                 <label for="ap_version">Archipelago version:</label>
                 <div class="base-select-row">
-                {% match (base_select.locked.as_ref(), base_select.switch_url.as_ref()) %}
-                {% when (Some(reason), _) %}
-                    <select id="ap_version" disabled>
-                        {% for option in base_select.options %}
-                        <option {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
-                        {% endfor %}
-                    </select>
-                    <span class="base-select-hint">{{ reason }}</span>
-                {% when (None, Some(_)) %}
-                    <select {{ ro }} id="ap_version" name="to" form="base-form">
-                        {% for option in base_select.options %}
-                        <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
-                        {% endfor %}
-                    </select>
-                    <button {{ ro }} type="submit" form="base-form">Change version</button>
-                    <span class="base-select-hint">Changing it validates every YAML of the room again. You are shown what it does before anything happens.</span>
-                {% when (None, None) %}
                     <select {{ ro }} id="ap_version" data-base-select>
                         {% for option in base_select.options %}
                         <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
                         {% endfor %}
                     </select>
                     <span class="base-select-hint">Choose it first: it loads this form again, with the worlds of that version in the Apworlds tab.</span>
-                {% endmatch %}
                 </div>
+                {% endif %}
             {% endif %}
 
             <label for="room_description">Description:</label>
@@ -146,11 +132,49 @@
         </div>
         <input {{ ro }} type="hidden" name="room.tz_offset" id="tz_offset">
 
+        {% if let Some(base_select) = self.base_select %}
+            {% if base_select.switch_url.is_some() %}
+            {# Moving a room that exists to another Archipelago version. Its selector and its
+               button belong to the form `base-form`, below, and not to the form around them.
+               `data-own-action` hides the form's own button while this tab is shown, so that
+               the one button here is the only thing to press. #}
+            <div class="options-tab" id="section-ap-version" data-own-action>
+                <p>
+                    This room is on
+                    <strong>{% for option in base_select.options %}{% if option.selected %}{{ option.label }}{% endif %}{% endfor %}</strong>.
+                </p>
+                {% if let Some(reason) = base_select.locked %}
+                    <p class="message info">It can't move to another version. {{+ reason }}</p>
+                {% else %}
+                    <p>
+                        Moving it to another version validates every YAML of the room again, with
+                        that version. You are shown what the move does before anything happens.
+                    </p>
+                    <p>
+                        This is not saved with the rest of the room: changes on the other tabs
+                        that you haven't saved are lost when you change the version.
+                    </p>
+                    <label for="ap_version">Move the room to:</label>
+                    <div class="base-select-row">
+                        <select {{ ro }} id="ap_version" name="to" form="base-form">
+                            {% for option in base_select.options %}
+                            {% if !option.selected %}
+                            <option value="{{ option.value }}">{{ option.label }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                        <button {{ ro }} type="submit" form="base-form">Change version</button>
+                    </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        {% endif %}
+
     </div>
 
     {% if !self.read_only %}
-        <hr>
         <div id="save-button">
+        <hr>
         {% if self.room_id.is_some() %}
             <button>Save {{+ self.ty }}</button>
         {% else %}
@@ -162,7 +186,7 @@
 
 {% if let Some(base_select) = self.base_select %}
     {% if let Some(switch_url) = base_select.switch_url %}
-    {# What the selector of the Archipelago version and its button, above, belong to #}
+    {# What the selector and the button of the "Archipelago version" tab belong to #}
     <form method="POST" action="{{ switch_url }}" id="base-form"></form>
     {% endif %}
 {% endif %}

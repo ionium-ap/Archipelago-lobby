@@ -30,6 +30,8 @@ pub struct EditRoom<'a> {
     base: TplContext<'a>,
     room: Option<Room>,
     room_settings_form: RoomSettingsBuilder<'a>,
+    /// Whether the page has the tab for moving the room to another Archipelago version
+    version_tab: bool,
 }
 
 /// The Archipelago version of a room that is being made: the one the form asks for with
@@ -105,6 +107,7 @@ pub async fn create_room<'a>(
     .with_base_select(base_select);
 
     Ok(EditRoom {
+        version_tab: false,
         room: None,
         room_settings_form: form_builder,
         base,
@@ -207,6 +210,7 @@ pub async fn edit_room<'a>(
     };
 
     Ok(EditRoom {
+        version_tab: base_select.is_some(),
         room_settings_form: RoomSettingsBuilder::new_with_room(
             base.clone(),
             index.clone(),
@@ -262,7 +266,9 @@ pub async fn switch_base<'a>(
     session: LoggedInSession,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<Either<Redirect, SwitchBaseTpl<'a>>> {
-    redirect_to.set(&format!("/edit-room/{room_id}"));
+    // Back to the tab of the edit page that this is asked from
+    let version_tab = format!("/edit-room/{room_id}#ap-version");
+    redirect_to.set(&version_tab);
 
     let mut conn = ctx.db_pool.get().await?;
     let room = db::get_room(room_id, &mut conn).await?;
@@ -273,7 +279,7 @@ pub async fn switch_base<'a>(
 
     let target = requested_base(index_manager, Some(form.to)).await?;
     if target == *room.ap_version {
-        return Ok(Either::Left(Redirect::to(format!("/edit-room/{room_id}"))));
+        return Ok(Either::Left(Redirect::to(version_tab)));
     }
     if db::get_generation_for_room(room.id, &mut conn)
         .await?

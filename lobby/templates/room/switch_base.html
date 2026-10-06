@@ -100,6 +100,6 @@
     <input type="hidden" name="to" value="{{ target }}">
     <input type="hidden" name="confirmed" value="true">
     <button class="validation-button">Move the room to Archipelago {{+ target }}</button>
-    <a class="button-emulator" href="/edit-room/{{ room.id }}">Keep it on {{+ room.ap_version }}</a>
+    <a class="button-emulator" href="/edit-room/{{ room.id }}#ap-version">Keep it on {{+ room.ap_version }}</a>
 </form>
 {% endblock %}

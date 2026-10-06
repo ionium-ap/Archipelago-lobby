@@ -15,6 +15,9 @@
     {% call menu::menu_item("Advanced options", "", "#", false, "advanced-options") %}{% endcall %}
     {% call menu::menu_item("Apworlds", "", "#", false, "apworlds-editor") %}{% endcall %}
     {% call menu::menu_item("Generation options", "", "#", false, "gen-options") %}{% endcall %}
+    {% if version_tab %}
+        {% call menu::menu_item("Archipelago version", "", "#ap-version", false, "ap-version") %}{% endcall %}
+    {% endif %}
 {% endblock %}
 
 {% block main %}

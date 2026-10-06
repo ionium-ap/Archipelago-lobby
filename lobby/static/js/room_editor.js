@@ -51,6 +51,7 @@ for (const fieldset of fieldsets) {
 const optionsSections = document.getElementsByClassName("options-tab");
 const tabBar = document.getElementById("module-menu");
 const tabs = tabBar.getElementsByTagName("a");
+const saveButton = document.getElementById("save-button");
 
 function switchToTab(tabId) {
     const selectedSection = document.getElementById("section-" + tabId);
@@ -73,9 +74,18 @@ function switchToTab(tabId) {
         tab.classList = ""
     }
     selectedTab.classList = "selected"
+
+    // A section with a button of its own isn't saved with the form, so the form's button is
+    // hidden while it is shown. Side by side, either could be taken to do the other's work.
+    if (saveButton) {
+        saveButton.style.display = selectedSection.hasAttribute("data-own-action") ? "none" : "";
+    }
 }
 
-switchToTab(tabs[0].id)
+// The address can name the tab to start on, as in `/edit-room/<id>#ap-version`.
+const wantedTab = window.location.hash.slice(1);
+const hasWantedTab = wantedTab && document.getElementById("section-" + wantedTab) && document.getElementById(wantedTab);
+switchToTab(hasWantedTab ? wantedTab : tabs[0].id)
 
 for (const tab of tabs) {
     tab.addEventListener('click', () => {
