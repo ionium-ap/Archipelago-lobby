@@ -158,6 +158,16 @@ The upgrade puts every existing room on 0.6.7, because that was the only version
 
 With `AP_BASES` unset, nothing else changes: the same workers get the same jobs, under the same keys in Valkey.
 
+The upgrade has one database migration, which adds `rooms.ap_version` and `room_templates.ap_version`. The lobby applies it when it starts. A lobby process from before the upgrade keeps working against the migrated tables, so it can serve while the new one starts, and going back to it needs nothing undone. When several new processes start at the same moment on a database that lacks the migration, one applies it and the others stop with `column "ap_version" of relation "rooms" already exists`; started again, they run normally. Starting one process first avoids that.
+
+To go on from there to a second base, keep this order:
+
+1. **Upgrade the lobby and the workers you have, with `AP_BASES` unset.** A lobby from before bases hands any job to any worker, so no worker of another base may run while one of those is still up.
+2. **Start the workers of the new base.** They wait and claim nothing.
+3. **Set `AP_BASES`.** If the index already describes the new base, the lobby offers it from the moment it starts with that setting, and makes it the default for new rooms. Its workers have to be there by then, which is why they come first.
+
+Going back is the same in reverse: unset `AP_BASES`, then stop the new base's workers, and only then put an older lobby back. A lobby from before bases doesn't read `rooms.ap_version`, so it would treat a room made on another base as a 0.6.7 room.
+
 ## Building a worker for a base
 
 Each base has a pin file, `taskcluster/docker/ap-worker/bases/<base>.env`, holding the commits of Archipelago, the fuzzer and the linter that its image is built from. Archipelago comes from the [ionium fork](https://github.com/ionium-ap/Archipelago), which keeps one patched line per upstream release; [its own notes](https://github.com/ionium-ap/Archipelago/blob/ionium-0.6.8/docs/ionium%20fork.md) list what each line carries and why.
