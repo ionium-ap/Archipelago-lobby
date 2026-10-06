@@ -9,7 +9,7 @@ use anyhow::anyhow;
 use apwm::{Index, Manifest};
 use askama::Template;
 use askama_web::WebTemplate;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Timelike, Utc};
 use rocket::http;
 use rocket::FromForm;
 use saphyr::LoadableYamlNode;
@@ -93,6 +93,37 @@ pub fn parse_date(date: &str, tz_offset: i32) -> Result<DateTime<Utc>> {
         .ok_or_else(|| crate::error::Error(anyhow::anyhow!("Cannot parse passed datetime")))?;
 
     Ok(date.into())
+}
+
+/// How many days ahead of now a room's closing time can be set to. About six months.
+pub const MAX_DAYS_UNTIL_CLOSE: i64 = 183;
+
+/// Refuses a closing time that is further ahead than `MAX_DAYS_UNTIL_CLOSE`.
+///
+/// `current` is the closing time the room has, when the room exists already. A room saved
+/// with its closing time left where it is gets through whatever that time is: rooms from
+/// before there was a limit can be far past it, and the rest of such a room can still be
+/// edited. Moving the closing time is held to the limit, also when it moves closer.
+pub fn validate_close_date(
+    close_date: NaiveDateTime,
+    current: Option<NaiveDateTime>,
+    now: NaiveDateTime,
+) -> Result<()> {
+    // The form gives minutes, and a stored time can have seconds
+    let to_the_minute =
+        |date: NaiveDateTime| date.with_second(0).and_then(|d| d.with_nanosecond(0));
+    if current.is_some_and(|current| to_the_minute(current) == to_the_minute(close_date)) {
+        return Ok(());
+    }
+
+    if close_date > now + chrono::Duration::days(MAX_DAYS_UNTIL_CLOSE) {
+        return Err(anyhow!(
+            "The submission limit can't be more than {MAX_DAYS_UNTIL_CLOSE} days from now, which is about six months."
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 pub fn validate_room_form(room_form: &mut RoomSettingsForm<'_>) -> Result<()> {
@@ -328,5 +359,62 @@ impl<'a> RoomSettingsBuilder<'a> {
     pub fn with_action_query(mut self, action_query: String) -> Self {
         self.action_query = action_query;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn now() -> NaiveDateTime {
+        "2026-10-06T12:00:00".parse().unwrap()
+    }
+
+    fn limit() -> NaiveDateTime {
+        now() + Duration::days(MAX_DAYS_UNTIL_CLOSE)
+    }
+
+    #[test]
+    fn test_new_room_closes_within_the_limit() {
+        assert!(validate_close_date(now() + Duration::days(30), None, now()).is_ok());
+        assert!(validate_close_date(limit(), None, now()).is_ok());
+        // A room can be made closed already
+        assert!(validate_close_date(now() - Duration::days(400), None, now()).is_ok());
+
+        let error = validate_close_date(limit() + Duration::minutes(1), None, now()).unwrap_err();
+        assert_eq!(
+            error.0.to_string(),
+            "The submission limit can't be more than 183 days from now, which is about six months."
+        );
+        assert!(validate_close_date(now() + Duration::days(3650), None, now()).is_err());
+    }
+
+    #[test]
+    fn test_closing_time_past_the_limit_stays_until_it_is_moved() {
+        let far = now() + Duration::days(3650);
+
+        // Saved as it is, with the rest of the room
+        assert!(validate_close_date(far, Some(far), now()).is_ok());
+        // The form gives minutes, a stored time can have seconds
+        let stored = far + Duration::seconds(42);
+        assert!(validate_close_date(far, Some(stored), now()).is_ok());
+
+        // Moved: further, closer but still past the limit, and by a single minute
+        assert!(validate_close_date(far + Duration::days(1), Some(far), now()).is_err());
+        assert!(validate_close_date(far - Duration::days(3000), Some(far), now()).is_err());
+        assert!(validate_close_date(far + Duration::minutes(1), Some(far), now()).is_err());
+
+        // Moved to within the limit
+        assert!(validate_close_date(limit(), Some(far), now()).is_ok());
+        assert!(validate_close_date(now() - Duration::days(1), Some(far), now()).is_ok());
+    }
+
+    #[test]
+    fn test_closing_time_within_the_limit_can_move_up_to_it() {
+        let current = now() + Duration::days(10);
+
+        assert!(validate_close_date(limit(), Some(current), now()).is_ok());
+        assert!(validate_close_date(limit() + Duration::minutes(1), Some(current), now()).is_err());
     }
 }

@@ -205,6 +205,17 @@
         refreshTimezoneOffset(closeDate);
         closeDateEl.value = dateToISOLikeButLocal(closeDate);
 
+        {% if self.ty.is_room() %}
+        // The lobby refuses a submission limit further ahead than this, so the picker stops
+        // there. A room from before there was a limit can be past it, and stays savable for
+        // as long as its limit isn't moved: that one gets no maximum here, or the browser
+        // would refuse the whole form.
+        const latestCloseDate = new Date(Date.now() + {{ crate::views::room_settings::MAX_DAYS_UNTIL_CLOSE }} * 24 * 60 * 60 * 1000);
+        if (closeDate <= latestCloseDate) {
+            closeDateEl.max = dateToISOLikeButLocal(latestCloseDate).slice(0, 16);
+        }
+        {% endif %}
+
         const form = document.getElementById("room-form");
         const messages = document.getElementById("messages");
         for (const elmt of form.getElementsByTagName("input")) {

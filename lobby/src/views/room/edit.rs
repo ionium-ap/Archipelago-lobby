@@ -7,6 +7,7 @@ use crate::session::LoggedInSession;
 use crate::yaml::{games_of_yaml, queue_yaml_validation, revalidate_yamls_if_necessary};
 use askama::Template;
 use askama_web::WebTemplate;
+use chrono::Utc;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::AsyncConnection;
 use rocket::either::Either;
@@ -20,7 +21,8 @@ use crate::{Context, LobbyConfig, TplContext};
 
 use crate::views::options_gen::requested_base;
 use crate::views::room_settings::{
-    validate_room_form, BaseSelect, CreateRoomForm, RoomSettingsBuilder, RoomSettingsType,
+    validate_close_date, validate_room_form, BaseSelect, CreateRoomForm, RoomSettingsBuilder,
+    RoomSettingsType,
 };
 use crate::views::utils::base_options;
 
@@ -157,6 +159,7 @@ pub async fn create_room_submit<'a>(
             Some(from_template),
         )?
     };
+    validate_close_date(new_room.close_date, None, Utc::now().naive_utc())?;
 
     let new_room = db::create_room(&new_room, &mut conn).await?;
 
@@ -423,6 +426,11 @@ pub async fn edit_room_submit<'a>(
                 .to_new_room(room_id, &index, room.ap_version.clone(), None, None)?;
         (old_resolved, new_room)
     };
+    validate_close_date(
+        new_room.close_date,
+        Some(room.settings.close_date),
+        Utc::now().naive_utc(),
+    )?;
 
     let room = db::update_room(&new_room, &mut conn).await?;
     revalidate_yamls_if_necessary(
