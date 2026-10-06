@@ -218,6 +218,13 @@ if __name__ == "__main__":
             if loaded_world in AutoPatchRegister.patch_types:
                 del AutoPatchRegister.patch_types[loaded_world]
 
+    # From Archipelago 0.6.8 on, the general tests go over `testable_worlds` instead of
+    # `world_types`. It is a copy taken when `worlds` was imported: before the world under test
+    # was loaded, and before the unloading above. Left alone, the general tests would skip the
+    # world under test and fail on every world that was unloaded.
+    if hasattr(AutoWorldRegister, "testable_worlds"):
+        AutoWorldRegister.testable_worlds = dict(AutoWorldRegister.world_types)
+
     annotations = get_annotations_for_game(annotations_folder, apworld, version)
 
     class WorldTest(WorldTestBase):

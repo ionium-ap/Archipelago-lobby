@@ -231,6 +231,13 @@ default_version = "latest_supported"
 
 At most one `[base]` table of a world may match a given base.
 
+A `[base]` table overrides only the keys it names; the others keep their top-level value. That
+matters for a world that left core. Donkey Kong Country 3 is a core world of 0.6.7 and not of
+0.6.8, and is `supported = true` and `disabled = true` at the top level. A table that only says
+`disabled = false` for 0.6.8 would offer it there as a core world, which it isn't: the table
+needs `supported = false` as well. `lint` can't catch that, since it doesn't know which worlds a
+base ships.
+
 A world isn't part of a base's view when it's disabled there or when none of its releases can run
 there. Older lobbies only know the first of those two: a world they must not offer has to be
 `disabled = true` at the top level, and enabled again with `[base."<requirement>"]` for the bases

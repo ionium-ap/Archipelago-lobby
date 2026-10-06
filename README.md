@@ -208,6 +208,8 @@ The world version that `requires: game` is compared against comes from the apwor
 
 Templates written by Archipelago always carry `requires: version` set to the version that wrote them, so a YAML from a newer Archipelago than the room's base is rejected on 0.6.8 and later.
 
+The unit tests differ too. `ap-worker/ap_tests.py` runs a world's own tests and Archipelago's general ones, after unloading every world but the one under test. On 0.6.7 the general tests go over `AutoWorldRegister.world_types`. From 0.6.8 on they go over `AutoWorldRegister.testable_worlds`, a copy taken when `worlds` is imported, so the script sets it again after unloading. Without that, the general tests miss the world under test, which is loaded later, and fail with a `KeyError` for any world that was in Archipelago's `worlds` directory at import and then unloaded. The index's checker image puts Universal Tracker there.
+
 # Running apdiff-viewer standalone
 
 `apdiff-viewer` renders side-by-side diffs of `.apworld` zip contents for PR reviewers. It ships as a separate service with its own postgres and a host directory for the apworld blob store, so it deploys independently of the lobby. Source under [apdiff-viewer/](apdiff-viewer/).
