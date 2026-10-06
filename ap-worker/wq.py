@@ -4,6 +4,7 @@ import sentry_sdk
 import aiohttp
 import asyncio
 import enum
+import signal
 import sys
 from multiprocessing import Process, Pipe
 
@@ -94,6 +95,11 @@ class LobbyQueue:
         await self.client.close()
 
     async def run(self):
+        # Stop on SIGTERM the way Ctrl-C does. In a container the worker is the first process,
+        # and the kernel only gives that one the signals it asked for: without this a worker
+        # that was told to stop went on until the grace period ran out and it was killed.
+        signal.signal(signal.SIGTERM, signal.default_int_handler)
+
         print(f"Serving {self.queue_name} jobs for Archipelago {self.ap_version}")
         sys.stdout.flush()
 
