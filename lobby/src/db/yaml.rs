@@ -255,6 +255,19 @@ pub async fn reset_yaml_validation_status(
 }
 
 #[tracing::instrument(skip(conn))]
+pub async fn reset_yaml_validation_status_for_room(
+    room_id: RoomId,
+    conn: &mut AsyncPgConnection,
+) -> Result<()> {
+    diesel::update(yamls::table.filter(yamls::room_id.eq(room_id)))
+        .set(yamls::validation_status.eq(YamlValidationStatus::Unknown))
+        .execute(conn)
+        .await?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip(conn))]
 pub async fn update_yaml_status(
     yaml_id: YamlId,
     validation_status: YamlValidationStatus,

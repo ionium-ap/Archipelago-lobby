@@ -1,5 +1,5 @@
 use crate::base_switch::{switch_report, SwitchReport};
-use crate::db::{self, ApVersion, Room, RoomId, RoomTemplateId};
+use crate::db::{self, ApVersion, Room, RoomId, RoomTemplateId, YamlValidationStatus};
 use crate::error::{Error, RedirectTo, Result, WithContext};
 use crate::index_manager::IndexManager;
 use crate::jobs::YamlValidationQueue;
@@ -319,15 +319,12 @@ pub async fn switch_base<'a>(
     // all go through validation again. A result that is still on its way from the old one is
     // dropped when it arrives, see the validation callback.
     let target = ApVersion::from(target);
+    let revalidate = room.settings.yaml_validation;
     conn.transaction::<(), Error, _>(|conn| {
         async move {
             db::update_room_ap_version(room.id, &target, conn).await?;
-            let room = db::get_room(room.id, conn).await?;
-            if room.settings.yaml_validation {
-                for yaml in &yamls {
-                    queue_yaml_validation(yaml, &room, index_manager, yaml_validation_queue, conn)
-                        .await?;
-                }
+            if revalidate {
+                db::reset_yaml_validation_status_for_room(room.id, conn).await?;
             }
 
             Ok(())
@@ -335,6 +332,27 @@ pub async fn switch_base<'a>(
         .scope_boxed()
     })
     .await?;
+
+    // The YAMLs are queued only now that the room's new version is committed. The validation
+    // callback compares a result's version with the room's, and a worker can answer within
+    // milliseconds: queued from inside the transaction, a result could arrive while the room
+    // still read as being on the old version, and be dropped for good.
+    if revalidate {
+        let room = db::get_room(room_id, &mut conn).await?;
+        for mut yaml in yamls {
+            // Its row was just reset. Without this, a YAML that was unsupported on the old
+            // version would be taken for one that needs no new answer.
+            yaml.validation_status = YamlValidationStatus::Unknown;
+            queue_yaml_validation(
+                &yaml,
+                &room,
+                index_manager,
+                yaml_validation_queue,
+                &mut conn,
+            )
+            .await?;
+        }
+    }
 
     Ok(Either::Left(Redirect::to(format!("/room/{room_id}"))))
 }
