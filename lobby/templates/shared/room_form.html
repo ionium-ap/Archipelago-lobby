@@ -24,20 +24,11 @@
         {% include "shared/room_form_tpl_section.html" %}
         {% endif %}
         <div class="options-tab" id="section-room-options">
-            <label for="room_name">Room name:</label>
-            <input {{ro}} type="text" name="room.room_name" id="room_name" value="{{self.room.name}}" minlength="1" required>
-
-            {% if self.ty.is_room() %}
-                <label for="close_date">Submission limit:</label>
-                <input {{ ro }} type="datetime-local" id="close_date" name="room.close_date">
-            {% else %}
-                <input {{ ro }} style="display: none" type="datetime-local" id="close_date" name="room.close_date">
-            {% endif %}
-
             {% if let Some(base_select) = self.base_select %}
                 {# A room or a template that is being made chooses its version here. It is
-                   not a field of this form: see `BaseSelect`. A room that exists is moved
-                   from a tab of its own, further down. #}
+                   not a field of this form: see `BaseSelect`. Choosing loads the form again
+                   and drops what was typed into it, so it comes before everything else. A
+                   room that exists is moved from a tab of its own, further down. #}
                 {% if base_select.switch_url.is_none() %}
                 <label for="ap_version">Archipelago version:</label>
                 <div class="base-select-row">
@@ -49,6 +40,16 @@
                     <span class="base-select-hint">Choose it first: it loads this form again, with the worlds of that version in the Apworlds tab.</span>
                 </div>
                 {% endif %}
+            {% endif %}
+
+            <label for="room_name">Room name:</label>
+            <input {{ro}} type="text" name="room.room_name" id="room_name" value="{{self.room.name}}" minlength="1" required>
+
+            {% if self.ty.is_room() %}
+                <label for="close_date">Submission limit:</label>
+                <input {{ ro }} type="datetime-local" id="close_date" name="room.close_date">
+            {% else %}
+                <input {{ ro }} style="display: none" type="datetime-local" id="close_date" name="room.close_date">
             {% endif %}
 
             <label for="room_description">Description:</label>
