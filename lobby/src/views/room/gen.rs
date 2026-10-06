@@ -13,6 +13,7 @@ use crate::{
     index_manager::IndexManager,
     jobs::{GenerationOutDir, GenerationParams, GenerationQueue},
     session::LoggedInSession,
+    yaml::read_yaml,
 };
 use apwm::Index;
 use askama::Template;
@@ -389,7 +390,7 @@ async fn enqueue_gen_job(
     let required_worlds = yamls
         .iter()
         .map(|yaml| {
-            let Ok(parsed) = serde_saphyr::from_str::<YamlFile>(&yaml.current_content()) else {
+            let Ok(parsed) = read_yaml::<YamlFile>(&yaml.current_content()) else {
                 Err(anyhow::anyhow!(
                     "Internal error, unable to reparse a YAML that was already parsed before"
                 ))?

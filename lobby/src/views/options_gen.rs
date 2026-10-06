@@ -5,6 +5,7 @@ use crate::{
     index_manager::IndexManager,
     jobs::OptionsDef,
     session::Session,
+    yaml::read_yaml,
     Context, LobbyConfig, TplContext,
 };
 use anyhow::anyhow;
@@ -763,7 +764,7 @@ async fn edit_yaml<'a>(
     redirect_to.set("/options");
 
     let yaml: serde_json::Value =
-        serde_saphyr::from_str(form.yaml).map_err(|e| anyhow!("Failed to parse YAML: {}", e))?;
+        read_yaml(form.yaml).map_err(|e| anyhow!("Failed to parse YAML: {}", e))?;
 
     let player_name = yaml
         .get("name")
@@ -924,6 +925,37 @@ async fn edit_yaml<'a>(
     })
 }
 
+/// The YAML that the options page offers for download: the keys Archipelago wants at the top,
+/// then the game's options under a key that is the game's name.
+///
+/// That key is whatever the game is called, and some names read as something other than text:
+/// `2048` as a number, `Yes` as a boolean. Written bare, Archipelago takes the key for that
+/// and then doesn't find the options of the game it was told to look for. The writer quotes
+/// such a key, and the test below holds it to that.
+fn write_yaml(
+    game_name: &str,
+    player_name: &str,
+    description: String,
+    game_options: &IndexMap<String, serde_json::Value>,
+) -> anyhow::Result<String> {
+    let mut root: IndexMap<String, serde_json::Value> = IndexMap::new();
+    root.insert(
+        "game".to_string(),
+        serde_json::Value::String(game_name.to_string()),
+    );
+    root.insert(
+        "name".to_string(),
+        serde_json::Value::String(player_name.to_string()),
+    );
+    root.insert(
+        "description".to_string(),
+        serde_json::Value::String(description),
+    );
+    root.insert(game_name.to_string(), serde_json::to_value(game_options)?);
+
+    Ok(serde_saphyr::to_string(&root)?)
+}
+
 #[rocket::post("/options/<apworld_name>/<version>/download?<base>", data = "<form>")]
 #[tracing::instrument(skip(host, index_manager, form, options_gen_queue, options_cache))]
 async fn download_yaml<'a>(
@@ -997,23 +1029,7 @@ async fn download_yaml<'a>(
         }
     }
 
-    // Build the full YAML structure
-    let mut root: IndexMap<String, serde_json::Value> = IndexMap::new();
-    root.insert(
-        "game".to_string(),
-        serde_json::Value::String(game_name.clone()),
-    );
-    root.insert(
-        "name".to_string(),
-        serde_json::Value::String(player_name.to_string()),
-    );
-    root.insert(
-        "description".to_string(),
-        serde_json::Value::String(description),
-    );
-    root.insert(game_name.clone(), serde_json::to_value(&game_options)?);
-
-    let yaml = serde_saphyr::to_string(&root)?;
+    let yaml = write_yaml(&game_name, player_name, description, &game_options)?;
 
     let value = format!("attachment; filename=\"{}.yaml\"", player_name);
     Ok(YamlDownload {
@@ -1319,5 +1335,38 @@ mod tests {
             .contains(&LEGACY, "world", &Version::new(1, 0, 0))
             .await
             .unwrap());
+    }
+
+    #[test]
+    fn test_downloaded_yaml_quotes_a_game_name_that_isnt_text() {
+        use saphyr::LoadableYamlNode;
+
+        // Names that a YAML reader takes for a number, a boolean or nothing when bare
+        let not_text = ["2048", "1.5", "0x10", "1e3", "Yes", "true", "null", "~"];
+        for game in not_text.into_iter().chain(["A Short Hike"]) {
+            let options = IndexMap::from([("goal".to_string(), serde_json::json!("2048"))]);
+            let yaml = write_yaml(game, "Player", String::new(), &options).unwrap();
+
+            // Read it back with a reader that gives every value its own type, as
+            // Archipelago's does: the options have to be under a key that is text
+            let docs = saphyr::YamlOwned::load_from_str(&yaml).unwrap();
+            let named = docs[0].as_mapping_get("game").and_then(|g| g.as_str());
+            assert_eq!(named, Some(game), "{yaml}");
+            let has_options = docs[0]
+                .as_mapping()
+                .unwrap()
+                .iter()
+                .any(|(key, value)| key.as_str() == Some(game) && value.is_mapping());
+            assert!(
+                has_options,
+                "no options under the text {game:?} in:\n{yaml}"
+            );
+
+            // That reader follows YAML 1.2, where `Yes` is text. Archipelago's follows 1.1,
+            // where it isn't, so also look at what was written.
+            if not_text.contains(&game) {
+                assert!(yaml.contains(&format!("\n\"{game}\":")), "{yaml}");
+            }
+        }
     }
 }

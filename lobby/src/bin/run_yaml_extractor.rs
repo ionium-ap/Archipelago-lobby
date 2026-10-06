@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use ap_lobby::db::{Json, YamlId};
 use ap_lobby::error::{Error, Result};
 use ap_lobby::extractor::extract_features;
+use ap_lobby::yaml::read_yaml;
 use ap_lobby::{db::YamlFile, schema::yamls};
 use apwm::Index;
 use diesel::prelude::*;
@@ -38,8 +39,7 @@ async fn main() -> Result<()> {
     conn.transaction::<(), Error, _>(|mut conn| {
         async move {
             for (yaml_id, raw_yaml) in &all_yamls {
-                let Ok(parsed) =
-                    serde_saphyr::from_str::<YamlFile>(raw_yaml.trim_start_matches('\u{feff}'))
+                let Ok(parsed) = read_yaml::<YamlFile>(raw_yaml.trim_start_matches('\u{feff}'))
                 else {
                     continue;
                 };

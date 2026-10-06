@@ -23,6 +23,20 @@ use std::time::Duration;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use wq::JobStatus;
 
+/// Reads one YAML document. Every read of a YAML in the lobby goes through here, so that they
+/// all agree on what is valid.
+pub fn read_yaml<'de, T: serde::Deserialize<'de>>(
+    yaml: &'de str,
+) -> std::result::Result<T, serde_saphyr::Error> {
+    let mut options = serde_saphyr::Options::default();
+    // `.inf` and `.nan` are valid YAML, and Archipelago reads them. By default they are
+    // refused wherever the type to read isn't known, and for an upload that is everything but
+    // its `name` and its `game`: a value the lobby never looks at would get the file refused.
+    options.reject_non_finite_typeless_float = false;
+
+    serde_saphyr::from_str_with_options(yaml, options)
+}
+
 #[tracing::instrument(skip_all)]
 pub fn parse_raw_yamls(yamls: &[&str]) -> Result<Vec<(String, YamlFile)>> {
     let yaml = yamls
@@ -45,7 +59,7 @@ pub fn parse_raw_yamls(yamls: &[&str]) -> Result<Vec<(String, YamlFile)>> {
                 anyhow::bail!("Invalid yaml file. Syntax error.")
             };
 
-            let parsed: YamlFile = match serde_saphyr::from_str(&doc) {
+            let parsed: YamlFile = match read_yaml(&doc) {
                 Ok(doc) => doc,
                 Err(e) => {
                     let error_str = e.to_string();
@@ -530,7 +544,7 @@ fn should_revalidate_yaml(
 /// The names of the worlds a YAML can roll: the one it names, or each one it gives a weight.
 /// None for a YAML that can't be read anymore.
 pub fn games_of_yaml(yaml: &Yaml) -> Vec<String> {
-    let Ok(parsed) = serde_saphyr::from_str::<YamlFile>(yaml.current_content()) else {
+    let Ok(parsed) = read_yaml::<YamlFile>(yaml.current_content()) else {
         return vec![];
     };
 
@@ -553,7 +567,7 @@ pub async fn queue_yaml_validation(
     conn: &mut AsyncPgConnection,
 ) -> Result<()> {
     let current = yaml.current_content();
-    let Ok(parsed) = serde_saphyr::from_str::<YamlFile>(current) else {
+    let Ok(parsed) = read_yaml::<YamlFile>(current) else {
         log::error!(
             "Internal error, unable to reparse YAML {} that was already parsed before",
             yaml.id
@@ -971,6 +985,22 @@ name: Player2
 game: Super Metroid
 "#;
         assert!(parse_raw_yamls(&[valid_multiple]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_raw_yamls_takes_values_the_lobby_doesnt_read() {
+        use crate::yaml::parse_raw_yamls;
+
+        // Valid YAML that Archipelago reads, in options the lobby never looks at
+        let non_finite = r#"
+name: Player1
+game: A Link to the Past
+A Link to the Past:
+  a: .inf
+  b: -.inf
+  c: .nan
+"#;
+        assert!(parse_raw_yamls(&[non_finite]).is_ok());
     }
 
     #[test]
