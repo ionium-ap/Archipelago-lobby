@@ -33,6 +33,11 @@ pub fn read_yaml<'de, T: serde::Deserialize<'de>>(
     // refused wherever the type to read isn't known, and for an upload that is everything but
     // its `name` and its `game`: a value the lobby never looks at would get the file refused.
     options.reject_non_finite_typeless_float = false;
+    // The lobby reads no comments. Asked to hand them over, the parser keeps a run of them
+    // until it knows what they belong to, and refuses a file with more than 32 in a row at
+    // some places ("too many consecutive comments"), such as a block of options that was
+    // commented out under a game. Not asking for them lifts that limit.
+    options.emit_comments = false;
 
     serde_saphyr::from_str_with_options(yaml, options)
 }
@@ -1001,6 +1006,52 @@ A Link to the Past:
   c: .nan
 "#;
         assert!(parse_raw_yamls(&[non_finite]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_raw_yamls_takes_any_number_of_comments_in_a_row() {
+        use crate::yaml::parse_raw_yamls;
+
+        // A long run of comment lines, in each place a YAML can have one. People comment out
+        // whole blocks of options, and a template explains its options at length.
+        let comments = |indent: &str| format!("{indent}# a comment\n").repeat(500);
+        let places = [
+            ("before everything", "{c0}name: Player1\ngame: A Link to the Past\n"),
+            (
+                "between two keys",
+                "name: Player1\n{c0}game: A Link to the Past\n",
+            ),
+            (
+                "before the first option of a game",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n{c2}  goal: ganon\n",
+            ),
+            (
+                "between two options",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n  goal: ganon\n{c2}  mode: open\n",
+            ),
+            (
+                "between two items of a list",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n  start_inventory:\n    - Bow\n{c4}    - Hookshot\n",
+            ),
+            (
+                "inside the weights of an option",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n  goal:\n{c4}    ganon: 50\n{c4}    pedestal: 50\n",
+            ),
+            ("after everything", "name: Player1\ngame: A Link to the Past\n{c0}"),
+        ];
+
+        for (place, yaml) in places {
+            let yaml = yaml
+                .replace("{c0}", &comments(""))
+                .replace("{c2}", &comments("  "))
+                .replace("{c4}", &comments("    "));
+            let result = parse_raw_yamls(&[&yaml]);
+            assert!(
+                result.is_ok(),
+                "comments {place}: {}",
+                result.unwrap_err().0
+            );
+        }
     }
 
     #[test]
