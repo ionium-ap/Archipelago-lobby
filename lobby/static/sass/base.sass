@@ -1862,3 +1862,84 @@ td:hover span.review-flag[title]::after
 .rf-remove
   padding: 0.3em 0.6em
   margin-left: auto
+
+// What reviewers made of a YAML
+.review-mark-wrapper
+  display: flex
+  align-items: center
+  gap: 0.4em
+
+select.review-mark
+  width: auto
+  margin: 0
+  padding: 0.3em 0.5em
+  font-weight: normal
+
+  &.review-mark-ok
+    background-color: hsl(130, 45%, 28%)
+
+  &.review-mark-needs_changes
+    background-color: hsl(35, 70%, 32%)
+
+button.review-comments-button
+  width: auto
+  padding: 0.3em 0.7em
+  white-space: nowrap
+
+button.review-changed
+  width: auto
+  padding: 0.2em 0.6em
+  font-size: 0.75em
+  border-radius: 0.8em
+  background-color: hsla(35, 90%, 40%, 0.35)
+  box-shadow: inset 0 0 0 1px hsl(35, 90%, 55%)
+  color: hsl(35, 100%, 85%)
+
+// Marked OK and not changed since: nothing left to do with it
+.review-done
+  td:not(.review-mark-cell):not(.review-actions)
+    opacity: 0.6
+
+.review-comments
+  width: min(45em, 95vw)
+
+.review-comments-list
+  max-height: 50vh
+  overflow-y: auto
+  margin-bottom: 1em
+
+.review-comment
+  padding: 0.5em 0.75em
+  margin-bottom: 0.5em
+  background-color: hsla(0, 0%, 0%, 0.2)
+  border-left: 2px solid hsla(200, 50%, 60%, 0.6)
+
+.review-comment-meta
+  display: flex
+  flex-wrap: wrap
+  align-items: center
+  gap: 0.5em
+  font-size: 0.85em
+  color: hsl(0, 0%, 80%)
+  margin-bottom: 0.3em
+
+  strong
+    color: white
+
+.review-comment-body
+  white-space: pre-wrap
+  word-break: break-word
+
+.review-comment-actions
+  display: flex
+  gap: 0.3em
+  margin-left: auto
+
+  button
+    padding: 0.3em 0.7em
+    font-size: 0.8em
+
+// "Only flagged YAMLs" while the review status filter overrides it
+.review-option-disabled
+  opacity: 0.5
+  cursor: not-allowed

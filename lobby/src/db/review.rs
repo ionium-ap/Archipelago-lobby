@@ -1,13 +1,14 @@
-//! The review filters reviewers define for a room, and the builtin ones they turned off
+//! The review filters reviewers define for a room, the builtin ones they turned off, and
+//! what they made of each YAML and said about it
 
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
-use crate::db::RoomId;
+use crate::db::{RoomId, YamlId};
 use crate::error::Result;
-use crate::schema::{room_review_filters, rooms};
+use crate::schema::{room_review_filters, rooms, yaml_review_comments, yaml_review_marks};
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = room_review_filters)]
@@ -266,4 +267,233 @@ pub async fn set_review_builtin_enabled(
             .await?;
     }
     Ok(())
+}
+
+/// What a reviewer made of a YAML
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Ok,
+    NeedsChanges,
+}
+
+impl ReviewStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReviewStatus::Ok => "ok",
+            ReviewStatus::NeedsChanges => "needs_changes",
+        }
+    }
+
+    pub fn from_db(status: &str) -> Option<Self> {
+        match status {
+            "ok" => Some(ReviewStatus::Ok),
+            "needs_changes" => Some(ReviewStatus::NeedsChanges),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = yaml_review_marks)]
+pub struct ReviewMark {
+    pub yaml_id: YamlId,
+    pub room_id: RoomId,
+    pub status: String,
+    /// The hash of the YAML's content when it was marked
+    pub content_sha256: String,
+    pub marked_by: i64,
+    pub marked_by_name: String,
+    pub marked_at: NaiveDateTime,
+}
+
+#[derive(Insertable, AsChangeset)]
+#[diesel(table_name = yaml_review_marks)]
+struct NewReviewMark<'a> {
+    yaml_id: YamlId,
+    room_id: RoomId,
+    status: &'a str,
+    content_sha256: &'a str,
+    marked_by: i64,
+    marked_by_name: &'a str,
+    marked_at: NaiveDateTime,
+}
+
+#[tracing::instrument(skip(conn))]
+pub async fn get_review_marks(
+    room_id: RoomId,
+    conn: &mut AsyncPgConnection,
+) -> Result<Vec<ReviewMark>> {
+    Ok(yaml_review_marks::table
+        .filter(yaml_review_marks::room_id.eq(room_id))
+        .select(ReviewMark::as_select())
+        .get_results(conn)
+        .await?)
+}
+
+/// Marks a YAML of the room, or takes its mark away with `None`
+#[tracing::instrument(skip(conn))]
+pub async fn set_review_mark(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    status: Option<ReviewStatus>,
+    content_sha256: &str,
+    editor: &ReviewEditor<'_>,
+    conn: &mut AsyncPgConnection,
+) -> Result<()> {
+    let Some(status) = status else {
+        diesel::delete(yaml_review_marks::table)
+            .filter(yaml_review_marks::room_id.eq(room_id))
+            .filter(yaml_review_marks::yaml_id.eq(yaml_id))
+            .execute(conn)
+            .await?;
+        return Ok(());
+    };
+
+    let mark = NewReviewMark {
+        yaml_id,
+        room_id,
+        status: status.as_str(),
+        content_sha256,
+        marked_by: editor.user_id,
+        marked_by_name: editor.name,
+        marked_at: chrono::Utc::now().naive_utc(),
+    };
+    diesel::insert_into(yaml_review_marks::table)
+        .values(&mark)
+        .on_conflict(yaml_review_marks::yaml_id)
+        .do_update()
+        .set(&mark)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = yaml_review_comments)]
+pub struct ReviewComment {
+    pub id: i32,
+    pub yaml_id: YamlId,
+    pub room_id: RoomId,
+    pub author_id: i64,
+    pub author_name: String,
+    pub content: String,
+    pub created_at: NaiveDateTime,
+    pub edited_at: Option<NaiveDateTime>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = yaml_review_comments)]
+struct NewReviewComment<'a> {
+    yaml_id: YamlId,
+    room_id: RoomId,
+    author_id: i64,
+    author_name: &'a str,
+    content: &'a str,
+}
+
+/// How many comments each YAML of the room has, for the YAMLs that have some
+#[tracing::instrument(skip(conn))]
+pub async fn count_review_comments(
+    room_id: RoomId,
+    conn: &mut AsyncPgConnection,
+) -> Result<Vec<(YamlId, i64)>> {
+    Ok(yaml_review_comments::table
+        .filter(yaml_review_comments::room_id.eq(room_id))
+        .group_by(yaml_review_comments::yaml_id)
+        .select((
+            yaml_review_comments::yaml_id,
+            diesel::dsl::count(yaml_review_comments::id),
+        ))
+        .get_results(conn)
+        .await?)
+}
+
+#[tracing::instrument(skip(conn))]
+pub async fn get_review_comments(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    conn: &mut AsyncPgConnection,
+) -> Result<Vec<ReviewComment>> {
+    Ok(yaml_review_comments::table
+        .filter(yaml_review_comments::room_id.eq(room_id))
+        .filter(yaml_review_comments::yaml_id.eq(yaml_id))
+        .order_by((
+            yaml_review_comments::created_at.asc(),
+            yaml_review_comments::id.asc(),
+        ))
+        .select(ReviewComment::as_select())
+        .get_results(conn)
+        .await?)
+}
+
+#[tracing::instrument(skip(conn))]
+pub async fn get_review_comment(
+    room_id: RoomId,
+    comment_id: i32,
+    conn: &mut AsyncPgConnection,
+) -> Result<Option<ReviewComment>> {
+    Ok(yaml_review_comments::table
+        .filter(yaml_review_comments::room_id.eq(room_id))
+        .filter(yaml_review_comments::id.eq(comment_id))
+        .select(ReviewComment::as_select())
+        .first(conn)
+        .await
+        .optional()?)
+}
+
+#[tracing::instrument(skip(content, conn))]
+pub async fn add_review_comment(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    content: &str,
+    editor: &ReviewEditor<'_>,
+    conn: &mut AsyncPgConnection,
+) -> Result<ReviewComment> {
+    Ok(diesel::insert_into(yaml_review_comments::table)
+        .values(NewReviewComment {
+            yaml_id,
+            room_id,
+            author_id: editor.user_id,
+            author_name: editor.name,
+            content,
+        })
+        .returning(ReviewComment::as_returning())
+        .get_result(conn)
+        .await?)
+}
+
+#[tracing::instrument(skip(content, conn))]
+pub async fn update_review_comment(
+    room_id: RoomId,
+    comment_id: i32,
+    content: &str,
+    conn: &mut AsyncPgConnection,
+) -> Result<Option<ReviewComment>> {
+    Ok(diesel::update(yaml_review_comments::table)
+        .filter(yaml_review_comments::room_id.eq(room_id))
+        .filter(yaml_review_comments::id.eq(comment_id))
+        .set((
+            yaml_review_comments::content.eq(content),
+            yaml_review_comments::edited_at.eq(Some(chrono::Utc::now().naive_utc())),
+        ))
+        .returning(ReviewComment::as_returning())
+        .get_result(conn)
+        .await
+        .optional()?)
+}
+
+/// Returns whether the room had that comment
+#[tracing::instrument(skip(conn))]
+pub async fn delete_review_comment(
+    room_id: RoomId,
+    comment_id: i32,
+    conn: &mut AsyncPgConnection,
+) -> Result<bool> {
+    let deleted = diesel::delete(yaml_review_comments::table)
+        .filter(yaml_review_comments::room_id.eq(room_id))
+        .filter(yaml_review_comments::id.eq(comment_id))
+        .execute(conn)
+        .await?;
+    Ok(deleted > 0)
 }

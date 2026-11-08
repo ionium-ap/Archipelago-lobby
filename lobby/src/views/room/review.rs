@@ -2,8 +2,11 @@
 //!
 //! Who can see it is up to `Room::can_review`. The filters are those of the `review-filters`
 //! crate: the builtin ones, which are on unless the room's reviewers turned them off, and the
-//! ones the reviewers defined for the room. Nothing is stored about the YAMLs, the filters are
-//! evaluated every time the tab is loaded.
+//! ones the reviewers defined for the room. The filters are evaluated every time the tab is
+//! loaded. What's stored about a YAML is what reviewers make of it (a mark, see
+//! `ReviewStatus`) and what they say about it (comments), none of which players see.
+
+use std::collections::HashMap;
 
 use anyhow::anyhow;
 use askama::Template;
@@ -21,7 +24,7 @@ use review_filters::{
     YamlEvaluation,
 };
 
-use crate::db::{self, ReviewEditor, ReviewFilter, Room, RoomId, YamlId};
+use crate::db::{self, ReviewEditor, ReviewFilter, ReviewStatus, Room, RoomId, YamlId};
 use crate::error::{ApiError, ApiResult, RedirectTo, Result, WithContext, WithStatus};
 use crate::session::Session;
 use crate::{Context, LobbyConfig, TplContext};
@@ -145,6 +148,16 @@ async fn read_body(data: Data<'_>, limit_kib: u64) -> ApiResult<String> {
     Ok(body.into_inner())
 }
 
+/// How big the other requests can be
+const MAX_REQUEST_BODY_KIB: u64 = 64;
+
+/// Reads a JSON request. Rocket's `Json` guard isn't used: what it refuses goes to the lobby's
+/// catchers, which redirect, and `fetch` takes the page it's redirected to for a success.
+async fn read_json<T: serde::de::DeserializeOwned>(data: Data<'_>) -> ApiResult<T> {
+    let body = read_body(data, MAX_REQUEST_BODY_KIB).await?;
+    serde_json::from_str(&body).map_err(|e| bad_request(anyhow!("Invalid request: {e}")))
+}
+
 /// Reads one filter, as the editor sends it or as a builtin file has it. Validating compiles
 /// its regexes, which is kept off the async workers.
 async fn read_filter(data: Data<'_>) -> ApiResult<Filter> {
@@ -223,6 +236,20 @@ struct YamlReview {
     owner_id: String,
     #[serde(flatten)]
     evaluation: YamlEvaluation,
+    /// Of the content the YAML has now, for marks to say which version they're about
+    content_sha256: String,
+    /// What a reviewer made of it, if one did
+    mark: Option<MarkInfo>,
+    comment_count: i64,
+}
+
+#[derive(Serialize)]
+struct MarkInfo {
+    status: ReviewStatus,
+    marked_by_name: String,
+    marked_at: NaiveDateTime,
+    /// Whether the YAML's content changed since it was marked
+    changed: bool,
 }
 
 #[derive(Serialize)]
@@ -246,6 +273,15 @@ async fn review_data(
     let disabled_builtins = db::get_review_disabled_builtins(room_id, &mut conn).await?;
     let stored_filters = db::get_review_filters(room_id, &mut conn).await?;
     let yamls = db::get_yamls_for_room_with_owner_names(room_id, &mut conn).await?;
+    let mut marks = db::get_review_marks(room_id, &mut conn)
+        .await?
+        .into_iter()
+        .map(|mark| (mark.yaml_id, mark))
+        .collect::<HashMap<_, _>>();
+    let comment_counts = db::count_review_comments(room_id, &mut conn)
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
     drop(conn);
 
     let builtins = builtin_rules()
@@ -303,18 +339,32 @@ async fn review_data(
 
         yamls
             .iter()
-            .map(|(yaml, owner_name)| YamlReview {
-                id: yaml.id,
-                player_name: yaml.player_name.clone(),
-                owner_name: owner_name.clone(),
-                owner_id: yaml.owner_id.to_string(),
-                evaluation: evaluate_yaml(
-                    yaml.current_content(),
-                    &yaml.game,
-                    &yaml.player_name,
-                    &active,
-                    &room_yamls,
-                ),
+            .map(|(yaml, owner_name)| {
+                let sha256 = content_sha256(yaml.current_content());
+                let mark = marks.remove(&yaml.id).and_then(|mark| {
+                    Some(MarkInfo {
+                        status: ReviewStatus::from_db(&mark.status)?,
+                        changed: mark.content_sha256 != sha256,
+                        marked_by_name: mark.marked_by_name,
+                        marked_at: mark.marked_at,
+                    })
+                });
+                YamlReview {
+                    id: yaml.id,
+                    player_name: yaml.player_name.clone(),
+                    owner_name: owner_name.clone(),
+                    owner_id: yaml.owner_id.to_string(),
+                    evaluation: evaluate_yaml(
+                        yaml.current_content(),
+                        &yaml.game,
+                        &yaml.player_name,
+                        &active,
+                        &room_yamls,
+                    ),
+                    content_sha256: sha256,
+                    mark,
+                    comment_count: comment_counts.get(&yaml.id).copied().unwrap_or(0),
+                }
             })
             .collect::<Vec<_>>()
     })
@@ -416,16 +466,17 @@ struct EnabledRequest {
 
 #[put(
     "/api/room/<room_id>/review/filters/<filter_id>/enabled",
-    data = "<request>"
+    data = "<data>"
 )]
-#[tracing::instrument(skip(session, ctx, request))]
+#[tracing::instrument(skip(session, ctx, data))]
 async fn set_filter_enabled(
     room_id: RoomId,
     filter_id: i32,
     session: Session,
-    request: Json<EnabledRequest>,
+    data: Data<'_>,
     ctx: &State<Context>,
 ) -> ApiResult<()> {
+    let request: EnabledRequest = read_json(data).await?;
     let mut conn = ctx.db_pool.get().await?;
     reviewable_room(room_id, &session, &mut conn).await?;
 
@@ -453,18 +504,19 @@ async fn delete_filter(
 }
 
 /// Takes the IDs of every one of the room's filters, in their new order
-#[put("/api/room/<room_id>/review/filter-order", data = "<filter_ids>")]
-#[tracing::instrument(skip(session, ctx))]
+#[put("/api/room/<room_id>/review/filter-order", data = "<data>")]
+#[tracing::instrument(skip(session, ctx, data))]
 async fn reorder_filters(
     room_id: RoomId,
     session: Session,
-    filter_ids: Json<Vec<i32>>,
+    data: Data<'_>,
     ctx: &State<Context>,
 ) -> ApiResult<()> {
+    let filter_ids: Vec<i32> = read_json(data).await?;
     let mut conn = ctx.db_pool.get().await?;
     reviewable_room(room_id, &session, &mut conn).await?;
 
-    db::reorder_review_filters(room_id, filter_ids.into_inner(), &mut conn)
+    db::reorder_review_filters(room_id, filter_ids, &mut conn)
         .await
         .status(Status::Conflict)?;
     Ok(())
@@ -472,16 +524,17 @@ async fn reorder_filters(
 
 #[put(
     "/api/room/<room_id>/review/builtins/<builtin_id>/enabled",
-    data = "<request>"
+    data = "<data>"
 )]
-#[tracing::instrument(skip(session, ctx, request))]
+#[tracing::instrument(skip(session, ctx, data))]
 async fn set_builtin_enabled(
     room_id: RoomId,
     builtin_id: &str,
     session: Session,
-    request: Json<EnabledRequest>,
+    data: Data<'_>,
     ctx: &State<Context>,
 ) -> ApiResult<()> {
+    let request: EnabledRequest = read_json(data).await?;
     if !builtin_rules().iter().any(|rule| rule.id() == builtin_id) {
         return Err(ApiError {
             error: anyhow!("There's no builtin filter called {builtin_id}"),
@@ -606,8 +659,277 @@ async fn import_filters(
     ))
 }
 
+/// What a mark remembers of the YAML's content, to tell whether it changed since
+fn content_sha256(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(content.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The YAML, if it's in the room
+async fn yaml_in_room(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    conn: &mut diesel_async::AsyncPgConnection,
+) -> ApiResult<db::Yaml> {
+    db::get_yaml_in_room(room_id, yaml_id, conn)
+        .await
+        .map_err(|_| not_found("YAML"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarkRequest {
+    /// `null` takes the mark away. It has to be there: a request that leaves it out by
+    /// mistake shouldn't take a mark away.
+    #[serde(deserialize_with = "Option::deserialize")]
+    status: Option<ReviewStatus>,
+    /// The `content_sha256` of the YAML as the page that marks it has it, so that what's
+    /// marked is what the reviewer looked at. Needed to mark, not to take a mark away.
+    #[serde(default)]
+    content_sha256: Option<String>,
+}
+
+#[put("/api/room/<room_id>/review/yamls/<yaml_id>/mark", data = "<data>")]
+#[tracing::instrument(skip(session, ctx, data))]
+async fn set_mark(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    session: Session,
+    data: Data<'_>,
+    ctx: &State<Context>,
+) -> ApiResult<()> {
+    let request: MarkRequest = read_json(data).await?;
+    let mut conn = ctx.db_pool.get().await?;
+    reviewable_room(room_id, &session, &mut conn).await?;
+    let yaml = yaml_in_room(room_id, yaml_id, &mut conn).await?;
+
+    let current_sha256 = content_sha256(yaml.current_content());
+    if request.status.is_some() {
+        let Some(seen_sha256) = &request.content_sha256 else {
+            return Err(bad_request(anyhow!(
+                "Say which version of the YAML is marked, with content_sha256"
+            )));
+        };
+        if *seen_sha256 != current_sha256 {
+            return Err(ApiError {
+                error: anyhow!(
+                    "The YAML changed since the page was loaded. Have a look at it again before marking it."
+                ),
+                status: Status::Conflict,
+            });
+        }
+    }
+
+    let (user_id, name) = editor(&session, &mut conn).await?;
+    let editor = ReviewEditor {
+        user_id,
+        name: &name,
+    };
+    db::set_review_mark(
+        room_id,
+        yaml_id,
+        request.status,
+        &current_sha256,
+        &editor,
+        &mut conn,
+    )
+    .await?;
+    Ok(())
+}
+
+/// How long a comment can be, in characters
+const MAX_COMMENT_LEN: usize = 5000;
+
+/// How many comments a YAML can have
+const MAX_COMMENTS_PER_YAML: usize = 200;
+
+#[derive(Serialize)]
+struct CommentInfo {
+    id: i32,
+    author_name: String,
+    content: String,
+    created_at: NaiveDateTime,
+    edited_at: Option<NaiveDateTime>,
+    can_edit: bool,
+    can_delete: bool,
+}
+
+/// Who can do what with a comment: its author edits and deletes it, the room's owner and
+/// admins can delete it too
+struct CommentRights {
+    user_id: i64,
+    moderates: bool,
+}
+
+impl CommentRights {
+    fn new(session: &Session, room: &Room, user_id: i64) -> Self {
+        Self {
+            user_id,
+            moderates: session.is_admin || session.user_id == Some(room.settings.author_id),
+        }
+    }
+
+    fn info(&self, comment: db::ReviewComment) -> CommentInfo {
+        let can_edit = comment.author_id == self.user_id;
+        CommentInfo {
+            id: comment.id,
+            author_name: comment.author_name,
+            content: comment.content,
+            created_at: comment.created_at,
+            edited_at: comment.edited_at,
+            can_edit,
+            can_delete: can_edit || self.moderates,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CommentRequest {
+    content: String,
+}
+
+fn comment_content(request: &CommentRequest) -> ApiResult<&str> {
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err(bad_request(anyhow!("A comment can't be empty")));
+    }
+    if content.chars().count() > MAX_COMMENT_LEN {
+        return Err(bad_request(anyhow!(
+            "A comment can't be longer than {MAX_COMMENT_LEN} characters"
+        )));
+    }
+    Ok(content)
+}
+
+#[get("/api/room/<room_id>/review/yamls/<yaml_id>/comments")]
+#[tracing::instrument(skip(session, ctx))]
+async fn list_comments(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    session: Session,
+    ctx: &State<Context>,
+) -> ApiResult<Json<Vec<CommentInfo>>> {
+    let mut conn = ctx.db_pool.get().await?;
+    let room = reviewable_room(room_id, &session, &mut conn).await?;
+    yaml_in_room(room_id, yaml_id, &mut conn).await?;
+
+    let (user_id, _) = editor(&session, &mut conn).await?;
+    let rights = CommentRights::new(&session, &room, user_id);
+    Ok(Json(
+        db::get_review_comments(room_id, yaml_id, &mut conn)
+            .await?
+            .into_iter()
+            .map(|comment| rights.info(comment))
+            .collect(),
+    ))
+}
+
+#[post("/api/room/<room_id>/review/yamls/<yaml_id>/comments", data = "<data>")]
+#[tracing::instrument(skip(session, ctx, data))]
+async fn add_comment(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    session: Session,
+    data: Data<'_>,
+    ctx: &State<Context>,
+) -> ApiResult<Json<CommentInfo>> {
+    let request: CommentRequest = read_json(data).await?;
+    let content = comment_content(&request)?;
+
+    let mut conn = ctx.db_pool.get().await?;
+    let room = reviewable_room(room_id, &session, &mut conn).await?;
+    yaml_in_room(room_id, yaml_id, &mut conn).await?;
+
+    let existing = db::get_review_comments(room_id, yaml_id, &mut conn)
+        .await?
+        .len();
+    if existing >= MAX_COMMENTS_PER_YAML {
+        return Err(bad_request(anyhow!(
+            "A YAML can't have more than {MAX_COMMENTS_PER_YAML} comments"
+        )));
+    }
+
+    let (user_id, name) = editor(&session, &mut conn).await?;
+    let editor = ReviewEditor {
+        user_id,
+        name: &name,
+    };
+    let comment = db::add_review_comment(room_id, yaml_id, content, &editor, &mut conn).await?;
+    Ok(Json(
+        CommentRights::new(&session, &room, user_id).info(comment),
+    ))
+}
+
+#[put("/api/room/<room_id>/review/comments/<comment_id>", data = "<data>")]
+#[tracing::instrument(skip(session, ctx, data))]
+async fn update_comment(
+    room_id: RoomId,
+    comment_id: i32,
+    session: Session,
+    data: Data<'_>,
+    ctx: &State<Context>,
+) -> ApiResult<Json<CommentInfo>> {
+    let request: CommentRequest = read_json(data).await?;
+    let content = comment_content(&request)?;
+
+    let mut conn = ctx.db_pool.get().await?;
+    let room = reviewable_room(room_id, &session, &mut conn).await?;
+    let (user_id, _) = editor(&session, &mut conn).await?;
+    let rights = CommentRights::new(&session, &room, user_id);
+
+    let comment = db::get_review_comment(room_id, comment_id, &mut conn)
+        .await?
+        .ok_or_else(|| not_found("comment"))?;
+    if !rights.info(comment).can_edit {
+        return Err(ApiError {
+            error: anyhow!("Only the author of a comment can edit it"),
+            status: Status::Forbidden,
+        });
+    }
+
+    let comment = db::update_review_comment(room_id, comment_id, content, &mut conn)
+        .await?
+        .ok_or_else(|| not_found("comment"))?;
+    Ok(Json(rights.info(comment)))
+}
+
+#[delete("/api/room/<room_id>/review/comments/<comment_id>")]
+#[tracing::instrument(skip(session, ctx))]
+async fn delete_comment(
+    room_id: RoomId,
+    comment_id: i32,
+    session: Session,
+    ctx: &State<Context>,
+) -> ApiResult<()> {
+    let mut conn = ctx.db_pool.get().await?;
+    let room = reviewable_room(room_id, &session, &mut conn).await?;
+    let (user_id, _) = editor(&session, &mut conn).await?;
+
+    let comment = db::get_review_comment(room_id, comment_id, &mut conn)
+        .await?
+        .ok_or_else(|| not_found("comment"))?;
+    if !CommentRights::new(&session, &room, user_id)
+        .info(comment)
+        .can_delete
+    {
+        return Err(ApiError {
+            error: anyhow!("Only the author of a comment, or the room's owner, can delete it"),
+            status: Status::Forbidden,
+        });
+    }
+
+    db::delete_review_comment(room_id, comment_id, &mut conn).await?;
+    Ok(())
+}
+
 pub fn routes() -> Vec<rocket::Route> {
     rocket::routes![
+        set_mark,
+        list_comments,
+        add_comment,
+        update_comment,
+        delete_comment,
         review_page,
         review_data,
         create_filter,

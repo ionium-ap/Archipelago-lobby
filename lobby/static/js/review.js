@@ -66,8 +66,9 @@
         return elmt;
     }
 
-    async function request(method, url, body) {
-        const options = { method, headers: {} };
+    async function request(method, url, body, { keepalive = false } = {}) {
+        // `keepalive` lets the request finish when the page is closed
+        const options = { method, headers: {}, keepalive };
         if (body !== undefined) {
             options.headers["Content-Type"] = "application/json";
             options.body = typeof body === "string" ? body : JSON.stringify(body);
@@ -217,8 +218,38 @@
     const search = document.getElementById("review-search");
     const onlyFlagged = document.getElementById("review-only-flagged");
     const minSeverity = document.getElementById("review-min-severity");
-    for (const input of [search, onlyFlagged, minSeverity]) {
+    const statusFilter = document.getElementById("review-status-filter");
+    for (const input of [search, onlyFlagged, minSeverity, statusFilter]) {
         input.addEventListener("input", renderResults);
+    }
+
+    // Looking for YAMLs by their review status is also looking for the ones without flags: a
+    // YAML that was fixed after it needed changes has none left
+    function syncOnlyFlagged() {
+        const overridden = statusFilter.value !== "";
+        onlyFlagged.disabled = overridden;
+        onlyFlagged.closest("label").classList.toggle("review-option-disabled", overridden);
+        onlyFlagged.closest("label").title = overridden
+            ? "Doesn't apply while looking for YAMLs by their review status"
+            : "";
+    }
+    statusFilter.addEventListener("input", syncOnlyFlagged);
+    syncOnlyFlagged();
+
+    const STATUS_LABELS = { ok: "OK", needs_changes: "Needs changes" };
+
+    // Where a YAML is in its review: "unreviewed", "ok", "needs_changes", or "changed" for a
+    // YAML whose content changed since it was marked
+    function reviewState(yaml) {
+        if (!yaml.mark) {
+            return "unreviewed";
+        }
+        return yaml.mark.changed ? "changed" : yaml.mark.status;
+    }
+
+    // Whether a YAML is done with: marked OK, and not changed since
+    function isDone(yaml) {
+        return reviewState(yaml) === "ok";
     }
 
     function shownFlags(yaml) {
@@ -246,7 +277,10 @@
             if (isFlagged) {
                 flagged++;
             }
-            if (onlyFlagged.checked && !isFlagged) {
+            if (onlyFlagged.checked && !onlyFlagged.disabled && !isFlagged) {
+                continue;
+            }
+            if (statusFilter.value && reviewState(yaml) !== statusFilter.value) {
                 continue;
             }
             const haystack = [yaml.player_name, yaml.owner_name, ...yaml.games].join(" ").toLowerCase();
@@ -256,22 +290,30 @@
             rows.push({ yaml, flags, rank: worstRank(flags, yaml) });
         }
 
+        // What's left to look at first, YAMLs marked OK last
         rows.sort((a, b) =>
-            b.rank - a.rank
+            isDone(a.yaml) - isDone(b.yaml)
+            || b.rank - a.rank
             || b.flags.length - a.flags.length
             || a.yaml.player_name.localeCompare(b.yaml.player_name));
 
+        const reviewed = state.yamls.filter((y) => y.mark && !y.mark.changed).length;
         document.getElementById("review-summary").textContent =
-            `${flagged} of ${state.yamls.length} YAMLs flagged`;
+            `${flagged} of ${state.yamls.length} YAMLs flagged, ${reviewed} reviewed`;
         document.getElementById("review-tab-count-yamls").textContent =
             flagged ? `(${flagged} flagged)` : "";
+
+        // The table is made again, the control that had focus is given it back
+        const focused = body.contains(document.activeElement) ? document.activeElement : null;
+        const focusedYaml = focused?.closest("tr")?.dataset.yamlId;
+        const focusedControl = focused?.dataset.focus;
 
         body.replaceChildren();
         if (rows.length === 0) {
             const text = state.yamls.length === 0
                 ? "There are no YAMLs in this room yet."
                 : "No YAML matches.";
-            body.append(el("tr", {}, el("td", { colspan: 5, text })));
+            body.append(el("tr", {}, el("td", { colspan: 6, text })));
             return;
         }
 
@@ -288,19 +330,135 @@
                 flagCell.append(flagElement(flag));
             }
 
-            body.append(el("tr", { "data-yaml-id": yaml.id },
+            body.append(el("tr", { "data-yaml-id": yaml.id, class: isDone(yaml) ? "review-done" : null },
                 el("td", { text: yaml.player_name }),
                 el("td", { text: yaml.games.join(", ") }),
                 el("td", { text: yaml.owner_name, title: yaml.owner_id }),
                 flagCell,
-                el("td", { class: "shrink" },
+                el("td", { class: "shrink review-mark-cell" }, markControl(yaml)),
+                el("td", { class: "shrink review-actions" },
                     el("a", {
                         href: `/room/${roomId}/download/${yaml.id}`,
                         text: "View",
+                        "data-focus": "view",
                         onclick: (e) => { e.preventDefault(); showYaml(roomId, yaml.id, false); },
                     })),
             ));
         }
+
+        if (focusedYaml && focusedControl) {
+            focusControl(focusedYaml, focusedControl);
+        }
+    }
+
+    // Focuses a control of a YAML's row, or its review status when that control is gone (the
+    // "changed" button, once the mark is renewed)
+    function focusControl(yamlId, control) {
+        const row = document.querySelector(`#review-results-body tr[data-yaml-id="${CSS.escape(yamlId)}"]`);
+        const target = row?.querySelector(`[data-focus="${control}"]`) ?? row?.querySelector('[data-focus="mark"]');
+        target?.focus();
+    }
+
+    // Marks waiting to be sent, by YAML. A select is changed by the arrow keys too, one option
+    // at a time, and saving each of them would move the row and send marks nobody chose: a
+    // mark is sent once the select has been left alone for a moment, or is left.
+    const pendingMarks = new Map();
+    const MARK_DELAY_MS = 800;
+
+    function scheduleMark(yaml, status) {
+        clearTimeout(pendingMarks.get(yaml.id)?.timer);
+        const timer = setTimeout(() => sendMark(yaml.id), MARK_DELAY_MS);
+        pendingMarks.set(yaml.id, { timer, status, sha256: yaml.content_sha256 });
+    }
+
+    function sendMark(yamlId) {
+        const pending = pendingMarks.get(yamlId);
+        if (!pending) {
+            return;
+        }
+        clearTimeout(pending.timer);
+        pendingMarks.delete(yamlId);
+        markYaml(yamlId, pending.status, pending.sha256);
+    }
+
+    // Marks the version of the YAML the page has: the server refuses if it changed since
+    function markYaml(yamlId, status, sha256) {
+        change(() => request("PUT", `${api}/yamls/${yamlId}/mark`,
+            { status, content_sha256: sha256 }, { keepalive: true }));
+    }
+
+    // Marks waiting for the select to be left alone are sent as soon as the page may go away:
+    // when it's hidden (another tab, or the browser minimised, which is also what comes
+    // before closing it on phones) and when it's left
+    function sendPendingMarks() {
+        for (const yamlId of [...pendingMarks.keys()]) {
+            sendMark(yamlId);
+        }
+    }
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+            sendPendingMarks();
+        }
+    });
+    window.addEventListener("pagehide", sendPendingMarks);
+
+    // Shows a status that isn't saved yet the way it'll look once it is
+    function showPendingMark(select, status) {
+        select.value = status ?? "";
+        select.className = `review-mark review-mark-${status ?? "none"}`;
+        select.title = `${status ? STATUS_LABELS[status] : "Not reviewed"}, saving…`;
+    }
+
+    // The review status of a YAML, the select that changes it, and its comments
+    function markControl(yaml) {
+        const select = el("select", {
+            class: `review-mark review-mark-${yaml.mark ? yaml.mark.status : "none"}`,
+            "aria-label": `Review status of ${yaml.player_name}`,
+        },
+            el("option", { value: "", text: "Not reviewed", selected: !yaml.mark }),
+            Object.entries(STATUS_LABELS).map(([value, text]) =>
+                el("option", { value, text, selected: yaml.mark?.status === value })));
+        select.dataset.focus = "mark";
+        select.addEventListener("change", () => {
+            const status = select.value || null;
+            showPendingMark(select, status);
+            scheduleMark(yaml, status);
+        });
+        select.addEventListener("blur", () => sendMark(yaml.id));
+
+        const wrapper = el("div", { class: "review-mark-wrapper" }, select);
+        if (yaml.mark) {
+            const when = `${STATUS_LABELS[yaml.mark.status]} by ${yaml.mark.marked_by_name}, ${formatTime(yaml.mark.marked_at)}`;
+            select.title = when;
+            if (yaml.mark.changed) {
+                // Choosing the same status in the select wouldn't send anything
+                const status = yaml.mark.status;
+                wrapper.append(el("button", {
+                    type: "button",
+                    class: "review-changed",
+                    title: `The YAML was edited after it was marked ${when}. Click once you've looked at it again to keep it ${STATUS_LABELS[status]}.`,
+                    "aria-label": `Changed since it was marked ${STATUS_LABELS[status]}: keep it ${STATUS_LABELS[status]}`,
+                    "data-focus": "changed",
+                    text: "changed",
+                    onclick: () => markYaml(yaml.id, status, yaml.content_sha256),
+                }));
+            }
+        }
+        // A mark that's waiting to be sent is what the select shows, across reloads
+        if (pendingMarks.has(yaml.id)) {
+            showPendingMark(select, pendingMarks.get(yaml.id).status);
+        }
+
+        const comments = yaml.comment_count;
+        wrapper.append(el("button", {
+            type: "button",
+            class: "review-comments-button",
+            "data-focus": "comments",
+            "aria-label": `${comments ? `Comments (${comments})` : "Comment"} on ${yaml.player_name}`,
+            text: comments ? `Comments (${comments})` : "Comment",
+            onclick: () => openComments(yaml),
+        }));
+        return wrapper;
     }
 
     function flagElement(flag) {
@@ -442,6 +600,202 @@
             ));
         }
     }
+
+    // == Comments ==
+
+    const commentsDialog = document.getElementById("review-comments");
+    const commentsList = document.getElementById("review-comments-list");
+    const commentsError = document.getElementById("review-comments-error");
+    const newComment = document.getElementById("review-comment-new");
+    const addCommentButton = document.getElementById("review-comment-add");
+    // The YAML whose comments are open
+    let commentsYaml = null;
+    // Only the latest refresh of the comments is shown, like `load`
+    let latestCommentsLoad = 0;
+    // The text of the comments being edited, by ID, kept when the list is shown again
+    const commentDrafts = new Map();
+    // What was being written in the box for a new comment, by YAML, kept when the dialog is
+    // closed
+    const newCommentDrafts = new Map();
+
+    function showCommentsError(message) {
+        commentsError.textContent = message;
+        commentsError.hidden = !message;
+    }
+
+    async function openComments(yaml) {
+        if (commentsYaml?.id !== yaml.id) {
+            commentDrafts.clear();
+        }
+        commentsYaml = yaml;
+        document.getElementById("review-comments-title").textContent =
+            `Comments on ${yaml.player_name} (${yaml.games.join(", ")})`;
+        newComment.value = newCommentDrafts.get(yaml.id) ?? "";
+        showCommentsError("");
+        commentsList.replaceChildren(el("p", { class: "review-hint", text: "Loading…" }));
+        commentsDialog.showModal();
+        newComment.focus();
+        await refreshComments();
+    }
+
+    newComment.addEventListener("input", () => {
+        if (commentsYaml) {
+            newCommentDrafts.set(commentsYaml.id, newComment.value);
+        }
+    });
+
+    commentsDialog.addEventListener("close", () => {
+        // The button that opened the dialog may have been replaced while it was open
+        if (commentsYaml) {
+            focusControl(commentsYaml.id, "comments");
+        }
+    });
+
+    async function refreshComments() {
+        const yaml = commentsYaml;
+        const thisLoad = ++latestCommentsLoad;
+        let comments, error;
+        try {
+            comments = await request("GET", `${api}/yamls/${yaml.id}/comments`);
+        } catch (e) {
+            error = e;
+        }
+        // Another YAML's comments, or a newer list, may have been asked for in the meantime
+        if (yaml !== commentsYaml || thisLoad !== latestCommentsLoad) {
+            return;
+        }
+        if (error) {
+            commentsList.replaceChildren();
+            showCommentsError("Couldn't load the comments: " + error.message);
+            return;
+        }
+
+        // Drafts of comments that are gone aren't kept
+        for (const id of [...commentDrafts.keys()]) {
+            if (!comments.some((c) => c.id === id)) {
+                commentDrafts.delete(id);
+            }
+        }
+        commentsList.replaceChildren(...(comments.length
+            ? comments.map(commentElement)
+            : [el("p", { class: "review-hint", text: "No comments yet." })]));
+    }
+
+    function commentElement(comment) {
+        if (commentDrafts.has(comment.id)) {
+            return commentEditor(comment);
+        }
+
+        const body = el("div", { class: "review-comment-body", text: comment.content });
+        const meta = el("div", { class: "review-comment-meta" },
+            el("strong", { text: comment.author_name }),
+            el("span", { text: formatTime(comment.created_at) }),
+            comment.edited_at && el("span", { text: "(edited)", title: formatTime(comment.edited_at) }));
+        const box = el("div", { class: "review-comment" }, meta, body);
+
+        const actions = el("div", { class: "review-comment-actions" });
+        if (comment.can_edit) {
+            actions.append(el("button", {
+                type: "button", text: "Edit",
+                onclick: () => {
+                    commentDrafts.set(comment.id, comment.content);
+                    const editor = commentEditor(comment);
+                    box.replaceWith(editor);
+                    editor.querySelector("textarea").focus();
+                },
+            }));
+        }
+        if (comment.can_delete) {
+            actions.append(el("button", {
+                type: "button", class: "cancel-button", text: "Delete",
+                onclick: () => {
+                    if (confirm("Delete this comment?")) {
+                        commentChange(() => request("DELETE", `${api}/comments/${comment.id}`));
+                    }
+                },
+            }));
+        }
+        if (actions.childElementCount) {
+            meta.append(actions);
+        }
+        return box;
+    }
+
+    // A comment being edited. What's typed is kept in `commentDrafts` until it's saved or the
+    // edit is cancelled, so that the list can be shown again meanwhile.
+    function commentEditor(comment) {
+        const textarea = el("textarea", { rows: 3, maxlength: 5000, "aria-label": "Comment" });
+        textarea.value = commentDrafts.get(comment.id);
+        textarea.addEventListener("input", () => commentDrafts.set(comment.id, textarea.value));
+
+        const box = el("div", { class: "review-comment" });
+        const save = el("button", {
+            type: "button", text: "Save",
+            onclick: async () => {
+                if (save.disabled) {
+                    return;
+                }
+                save.disabled = true;
+                const content = textarea.value;
+                await commentChange(async () => {
+                    await request("PUT", `${api}/comments/${comment.id}`, { content });
+                    commentDrafts.delete(comment.id);
+                });
+                save.disabled = false;
+            },
+        });
+        const cancel = el("button", {
+            type: "button", text: "Cancel",
+            onclick: () => {
+                commentDrafts.delete(comment.id);
+                box.replaceWith(commentElement(comment));
+            },
+        });
+        box.append(textarea, el("div", { class: "review-comment-actions" }, save, cancel));
+        return box;
+    }
+
+    // Changes the comments, then shows them and the counts in the table as they are after it
+    async function commentChange(action) {
+        const yaml = commentsYaml;
+        showCommentsError("");
+        try {
+            await action();
+        } catch (e) {
+            // Shown where it happened: in the dialog if it's still about that YAML
+            if (commentsDialog.open && commentsYaml === yaml) {
+                showCommentsError(e.message);
+            } else {
+                notify(`Couldn't change the comments of ${yaml.player_name}: ${e.message}`);
+            }
+            return false;
+        }
+        if (commentsYaml === yaml) {
+            await refreshComments();
+        }
+        change(() => {});
+        return true;
+    }
+
+    addCommentButton.addEventListener("click", async () => {
+        if (addCommentButton.disabled) {
+            return;
+        }
+        addCommentButton.disabled = true;
+        const yaml = commentsYaml;
+        const content = newComment.value;
+        const added = await commentChange(() =>
+            request("POST", `${api}/yamls/${yaml.id}/comments`, { content }));
+        addCommentButton.disabled = false;
+        if (added) {
+            newCommentDrafts.delete(yaml.id);
+            // Unless the dialog moved on to another YAML, or more was typed meanwhile
+            if (commentsYaml === yaml && newComment.value === content) {
+                newComment.value = "";
+            }
+        }
+    });
+    document.getElementById("review-comments-close").addEventListener("click", () => commentsDialog.close());
 
     // == Import ==
 

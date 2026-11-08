@@ -122,6 +122,37 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
     use crate::db::types::sql::*;
+
+    yaml_review_comments (id) {
+        id -> Int4,
+        yaml_id -> SqlYamlId,
+        room_id -> SqlRoomId,
+        author_id -> Int8,
+        author_name -> Varchar,
+        content -> Text,
+        created_at -> Timestamp,
+        edited_at -> Nullable<Timestamp>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::db::types::sql::*;
+
+    yaml_review_marks (yaml_id) {
+        yaml_id -> SqlYamlId,
+        room_id -> SqlRoomId,
+        status -> Text,
+        content_sha256 -> Text,
+        marked_by -> Int8,
+        marked_by_name -> Varchar,
+        marked_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::db::types::sql::*;
     use super::sql_types::ValidationStatus;
     use super::sql_types::Apworld;
 
@@ -155,6 +186,10 @@ diesel::joinable!(room_review_filters -> rooms (room_id));
 diesel::joinable!(room_templates -> discord_users (author_id));
 diesel::joinable!(rooms -> discord_users (author_id));
 diesel::joinable!(rooms -> room_templates (from_template_id));
+diesel::joinable!(yaml_review_comments -> rooms (room_id));
+diesel::joinable!(yaml_review_comments -> yamls (yaml_id));
+diesel::joinable!(yaml_review_marks -> rooms (room_id));
+diesel::joinable!(yaml_review_marks -> yamls (yaml_id));
 diesel::joinable!(yamls -> discord_users (owner_id));
 diesel::joinable!(yamls -> rooms (room_id));
 
@@ -165,5 +200,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     room_review_filters,
     room_templates,
     rooms,
+    yaml_review_comments,
+    yaml_review_marks,
     yamls,
 );

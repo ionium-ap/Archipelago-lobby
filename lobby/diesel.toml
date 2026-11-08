@@ -24,3 +24,11 @@ room_id = { type = "SqlRoomId" }
 
 [print_schema.patches.room_review_filters]
 room_id = { type = "SqlRoomId" }
+
+[print_schema.patches.yaml_review_marks]
+yaml_id = { type = "SqlYamlId" }
+room_id = { type = "SqlRoomId" }
+
+[print_schema.patches.yaml_review_comments]
+yaml_id = { type = "SqlYamlId" }
+room_id = { type = "SqlRoomId" }

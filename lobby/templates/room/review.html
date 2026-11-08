@@ -41,6 +41,15 @@
                 <option value="error">error</option>
             </select>
         </label>
+        <label class="review-option">Review
+            <select id="review-status-filter">
+                <option value="">any</option>
+                <option value="unreviewed">not reviewed</option>
+                <option value="ok">OK</option>
+                <option value="needs_changes">needs changes</option>
+                <option value="changed">changed since review</option>
+            </select>
+        </label>
         <span id="review-summary" class="review-summary"></span>
     </div>
     <table class="styled review-results">
@@ -50,11 +59,12 @@
                 <th>Game</th>
                 <th>Uploaded by</th>
                 <th>Flags</th>
+                <th class="shrink">Review</th>
                 <th class="shrink"></th>
             </tr>
         </thead>
         <tbody id="review-results-body">
-            <tr><td colspan="5">Loading…</td></tr>
+            <tr><td colspan="6">Loading…</td></tr>
         </tbody>
     </table>
     </section>
@@ -160,6 +170,19 @@
     <div class="modal-buttons">
         <button type="button" id="rf-save">Save</button>
         <button type="button" id="rf-cancel">Cancel</button>
+    </div>
+</dialog>
+
+<dialog id="review-comments" class="review-editor review-comments" aria-labelledby="review-comments-title">
+    <h3 id="review-comments-title">Comments</h3>
+    <p class="review-hint">Only the room's reviewers see these.</p>
+    <div id="review-comments-list" class="review-comments-list"></div>
+    <label for="review-comment-new">Add a comment</label>
+    <textarea id="review-comment-new" rows="3" maxlength="5000"></textarea>
+    <p class="review-editor-error" id="review-comments-error" hidden></p>
+    <div class="modal-buttons">
+        <button type="button" id="review-comment-add">Comment</button>
+        <button type="button" id="review-comments-close">Close</button>
     </div>
 </dialog>
 
