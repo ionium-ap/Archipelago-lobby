@@ -40,6 +40,7 @@ pub struct RoomTpl<'a> {
     is_closed: bool,
     has_room_url: bool,
     is_my_room: bool,
+    can_review: bool,
     room_info: Option<db::RoomInfo>,
     current_user_has_yaml_in_room: bool,
     game_display_names: HashMap<String, String>,
@@ -107,6 +108,7 @@ pub async fn room<'a>(
     let base_chip = base_chip(&room.ap_version, &index_manager.default_base().await);
 
     let is_my_room = session.is_admin || session.user_id == Some(room.settings.author_id);
+    let can_review = room.can_review(session.is_admin, session.user_id);
     let user_has_yaml = yamls
         .iter()
         .any(|yaml| Some(yaml.0.owner_id) == session.user_id);
@@ -140,6 +142,7 @@ pub async fn room<'a>(
         room,
         yamls,
         is_my_room,
+        can_review,
         room_info,
         current_user_has_yaml_in_room: user_has_yaml,
         game_display_names,

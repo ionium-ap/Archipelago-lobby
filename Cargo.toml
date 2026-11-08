@@ -7,6 +7,7 @@ members = [
     "wq",
     "apdiff-viewer",
     "community-ap-tools",
+    "review-filters",
 ]
 
 [patch.crates-io]

@@ -25,6 +25,7 @@ pub struct NewRoomTemplate<'a> {
     pub yaml_validation: bool,
     pub allow_unsupported: bool,
     pub yaml_limit_bypass_list: Vec<i64>,
+    pub reviewer_list: Vec<i64>,
     pub manifest: Json<Manifest>,
     pub show_apworlds: bool,
     pub global: bool,

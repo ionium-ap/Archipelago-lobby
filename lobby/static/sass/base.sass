@@ -1587,3 +1587,278 @@ select.base-select
   display: flex
   gap: 0.75em
   margin: 1.5em 0
+
+// A line under a field of the room form that says what the field is for
+.form-hint
+  margin: -0.5em 0 1em 0
+  font-size: 0.85em
+  color: hsl(0, 0%, 75%)
+
+/* == YAML REVIEW == */
+
+// The two sections of the review page
+.review-tabs
+  display: flex
+  gap: 0.25em
+  margin: 0.5em 0 1em 0
+  border-bottom: 1px solid hsla(0, 0%, 100%, 0.2)
+
+  a
+    padding: 0.6em 1.2em
+    color: hsl(0, 0%, 80%)
+    border: 1px solid transparent
+    border-bottom: none
+    margin-bottom: -1px
+
+    &:hover
+      color: white
+      background-color: hsla(0, 0%, 100%, 0.05)
+
+    &.selected
+      color: white
+      font-weight: bold
+      background-color: hsla(0, 0%, 0%, 0.25)
+      border-color: hsla(0, 0%, 100%, 0.2)
+
+.review-tab-count
+  font-weight: normal
+  font-size: 0.85em
+  color: hsl(0, 0%, 75%)
+
+.review-flag-link
+  cursor: pointer
+
+  &:hover, &:focus-visible
+    filter: brightness(1.25)
+    outline: none
+
+// The row of the filter a flag was clicked on
+.review-highlight
+  animation: review-highlight 2s ease-out
+
+@keyframes review-highlight
+  from
+    background-color: hsla(200, 70%, 50%, 0.45)
+  to
+    background-color: transparent
+
+.review-hint
+  font-size: 0.9em
+  color: hsl(0, 0%, 80%)
+
+  code
+    background-color: hsla(0, 0%, 0%, 0.25)
+    padding: 0 0.25em
+
+.review-toolbar
+  display: flex
+  flex-wrap: wrap
+  align-items: center
+  gap: 0.5em 1em
+  margin: 0.5em 0
+
+  input[type=search]
+    flex: 1 1 15em
+    background-color: hsla(0, 0%, 0%, 0.2)
+    border: none
+    box-shadow: 0 0 0 1px hsla(0, 0%, 100%, 0.05), inset 0 0 1px black
+    font-size: 1em
+    padding: 0.5em 0.75em
+    color: hsl(0, 0%, 85%)
+
+  select
+    width: auto
+    margin: 0 0 0 0.5em
+
+.review-option
+  display: inline-flex
+  align-items: center
+  gap: 0.4em
+  cursor: pointer
+
+.review-summary
+  margin-left: auto
+  color: hsl(0, 0%, 80%)
+
+.review-flag-list
+  line-height: 1.9
+
+.review-flag, .review-severity
+  display: inline-block
+  padding: 0 0.5em
+  margin: 0 0.3em 0 0
+  border-radius: 0.8em
+  border: 1px solid
+  font-size: 0.85em
+  line-height: 1.5
+  white-space: nowrap
+
+
+// What a flag says is in its tooltip: the rule above that writes the titles of a cell's spans
+// into it on hover would move the other flags around
+td:hover span.review-flag[title]::after
+  content: none
+
+.review-flag-info, .review-severity-info
+  border-color: hsl(200, 50%, 60%)
+  color: hsl(200, 60%, 85%)
+
+.review-flag-warning, .review-severity-warning
+  border-color: hsl(35, 90%, 55%)
+  color: hsl(35, 100%, 80%)
+  background-color: hsla(35, 90%, 40%, 0.2)
+
+.review-flag-error, .review-severity-error
+  border-color: hsl(0, 70%, 55%)
+  color: hsl(0, 100%, 85%)
+  background-color: hsla(0, 80%, 40%, 0.3)
+
+.review-flag-broken
+  border-style: dashed
+  border-color: hsl(0, 0%, 60%)
+  color: hsl(0, 0%, 80%)
+
+.review-filters
+  caption
+    padding: 0.5em 0.75em
+
+  input[type=checkbox]
+    cursor: pointer
+    width: 1.1em
+    height: 1.1em
+
+.review-filter-description
+  font-size: 0.85em
+  color: hsl(0, 0%, 80%)
+  white-space: pre-wrap
+
+.review-filter-invalid
+  font-size: 0.85em
+  color: hsl(0, 100%, 80%)
+
+.review-disabled
+  td:not(:first-child)
+    opacity: 0.5
+
+.review-actions
+  button, .button-emulator
+    width: auto
+    margin: 0.1em
+
+.review-editor
+  background-color: hsl(200, 30%, 25%)
+  background-image: url("../images/background.png")
+  color: white
+  border: none
+  border-radius: 8px
+  padding: 1.5em
+  width: min(60em, 95vw)
+  max-height: 90vh
+  overflow-y: auto
+  box-shadow: 0 4px 20px hsla(0, 0%, 0%, 0.5)
+
+  h3
+    margin: 0 0 0.75em 0
+    color: hsl(200, 80%, 90%)
+
+  label
+    display: block
+    margin-bottom: 0.25em
+
+  label.review-option
+    display: inline-flex
+
+  input[type=text], input[type=number], textarea
+    width: 100%
+    background-color: hsla(0, 0%, 0%, 0.2)
+    border: none
+    box-shadow: 0 0 0 1px hsla(0, 0%, 100%, 0.05), inset 0 0 1px black
+    font-size: 1em
+    padding: 0.4em 0.6em
+    color: hsl(0, 0%, 85%)
+    margin: 0 0 0.75em 0
+
+  textarea
+    min-height: 3em
+    font-family: inherit
+
+  #rf-json
+    font-family: monospace
+    font-size: 0.9em
+    min-height: 25em
+
+  select
+    width: auto
+    margin: 0
+    padding: 0.4em
+
+  fieldset
+    border: 1px solid hsla(0, 0%, 100%, 0.2)
+    margin: 0.75em 0
+
+.review-editor-row
+  display: flex
+  gap: 1em
+  flex-wrap: wrap
+
+  > div
+    flex: 1 1 12em
+
+.review-editor-tabs
+  display: flex
+  gap: 0.25em
+  margin-bottom: 1em
+
+  button.selected
+    background-color: hsl(200, 60%, 35%)
+
+.review-editor-error
+  white-space: pre-wrap
+  background-color: hsl(0, 90%, 20%)
+  padding: 0.5em
+  font-weight: bold
+
+.rf-pred
+  border-left: 2px solid hsla(200, 50%, 60%, 0.5)
+  padding: 0.25em 0 0.25em 0.5em
+  margin: 0.25em 0
+
+.rf-pred-header
+  display: flex
+  flex-wrap: wrap
+  align-items: center
+  gap: 0.4em
+
+  input[type=text], input[type=number]
+    margin: 0
+
+  .rf-path
+    width: 14em
+
+  .rf-value
+    width: 14em
+
+  .rf-small
+    width: 6em
+
+.rf-values
+  display: inline-flex
+  flex-wrap: wrap
+  align-items: center
+  gap: 0.4em
+
+.rf-pred-children
+  margin-left: 1em
+
+.rf-pred-add
+  display: flex
+  gap: 0.4em
+  margin: 0.25em 0
+
+  button
+    font-size: 0.75em
+    padding: 0.4em 0.75em
+
+.rf-remove
+  padding: 0.3em 0.6em
+  margin-left: auto

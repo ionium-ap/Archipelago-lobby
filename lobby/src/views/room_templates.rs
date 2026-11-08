@@ -19,8 +19,8 @@ use crate::{Context, LobbyConfig, TplContext};
 use super::manifest_editor::manifest_from_form;
 use super::options_gen::requested_base;
 use super::room_settings::{
-    parse_date, validate_room_form, BaseSelect, RoomSettingsBuilder, RoomSettingsForm,
-    RoomSettingsType,
+    parse_date, parse_discord_ids, validate_room_form, BaseSelect, RoomSettingsBuilder,
+    RoomSettingsForm, RoomSettingsType,
 };
 use super::utils::{base_options, BaseOption};
 
@@ -201,6 +201,7 @@ async fn create_tpl_submit<'a>(
             .split(',')
             .filter_map(|id| i64::from_str(id).ok())
             .collect(),
+        reviewer_list: parse_discord_ids(tpl_form.room.reviewer_list),
         manifest: db::Json(room_manifest),
         show_apworlds: tpl_form.room.show_apworlds,
         tpl_name: tpl_form.tpl_name,
@@ -321,6 +322,7 @@ async fn edit_tpl_submit<'a>(
             .split(',')
             .filter_map(|id| i64::from_str(id).ok())
             .collect(),
+        reviewer_list: parse_discord_ids(tpl_form.room.reviewer_list),
         manifest: db::Json(room_manifest),
         show_apworlds: tpl_form.room.show_apworlds,
         tpl_name: tpl_form.tpl_name,

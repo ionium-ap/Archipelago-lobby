@@ -1,0 +1,14 @@
+{
+  "name": "Starting inventory",
+  "description": "The YAML starts with items, through start_inventory or start_inventory_from_pool.",
+  "game": null,
+  "when": null,
+  "then": {
+    "type": "or",
+    "predicates": [
+      {"type": "check", "path": "start_inventory", "check": {"type": "count", "check": {"type": "greater_than", "value": 0}}},
+      {"type": "check", "path": "start_inventory_from_pool", "check": {"type": "count", "check": {"type": "greater_than", "value": 0}}}
+    ]
+  },
+  "severity": "info"
+}

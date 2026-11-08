@@ -61,6 +61,7 @@ stages:
       - "apwm/**/*"
       - "wq/**/*"
       - "lobby/**/*"
+      - "review-filters/**/*"
       - "apdiff-viewer/**/*"
       - "community-ap-tools/**/*"
       - "ap-worker/**/*"

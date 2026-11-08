@@ -21,7 +21,7 @@ tasks:
       build-result: /builds/worker/target/release/ap-lobby
       docker-repo: ghcr.io/eijebong/archipelago-lobby
       build-args: --bin ap-lobby
-      skip-unless-changed: ["Cargo.*", "wq/**", "apwm/**", "lobby/**", "taskcluster/**"]
+      skip-unless-changed: ["Cargo.*", "wq/**", "apwm/**", "lobby/**", "review-filters/**", "taskcluster/**"]
     apwm:
       package-name: apwm
       build-result: /builds/worker/target/release/apwm

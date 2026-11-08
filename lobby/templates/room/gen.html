@@ -11,6 +11,9 @@
     {% call menu::menu_item("Edit room", "", edit_url, false, "editButton") %}{% endcall %}
     {% let gen_url = format!("/room/{}/generation", self.room.id) %}
     {% call menu::menu_item("Generation", "", gen_url, true, "genButton") %}{% endcall %}
+    {# Only the room's owner gets here, who can always review #}
+    {% let review_url = format!("/room/{}/review", self.room.id) %}
+    {% call menu::menu_item("Review", "", review_url, false, "reviewButton") %}{% endcall %}
 {% endblock %}
 
 {% block main %}

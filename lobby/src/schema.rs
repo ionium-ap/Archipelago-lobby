@@ -47,6 +47,22 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::db::types::sql::*;
 
+    room_review_filters (id) {
+        id -> Int4,
+        room_id -> SqlRoomId,
+        filter -> Jsonb,
+        position -> Int4,
+        enabled -> Bool,
+        last_edited_by -> Int8,
+        last_edited_by_name -> Varchar,
+        last_edited_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::db::types::sql::*;
+
     room_templates (id) {
         id -> SqlRoomTemplateId,
         name -> Varchar,
@@ -69,6 +85,7 @@ diesel::table! {
         is_bundle_room -> Bool,
         locked -> Bool,
         ap_version -> Nullable<Text>,
+        reviewer_list -> Array<Int8>,
     }
 }
 
@@ -97,6 +114,8 @@ diesel::table! {
         is_bundle_room -> Bool,
         locked -> Bool,
         ap_version -> Text,
+        reviewer_list -> Array<Int8>,
+        review_disabled_builtins -> Array<Text>,
     }
 }
 
@@ -132,6 +151,7 @@ diesel::table! {
 
 diesel::joinable!(generations -> rooms (room_id));
 diesel::joinable!(room_info -> rooms (room_id));
+diesel::joinable!(room_review_filters -> rooms (room_id));
 diesel::joinable!(room_templates -> discord_users (author_id));
 diesel::joinable!(rooms -> discord_users (author_id));
 diesel::joinable!(rooms -> room_templates (from_template_id));
@@ -142,6 +162,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     discord_users,
     generations,
     room_info,
+    room_review_filters,
     room_templates,
     rooms,
     yamls,
