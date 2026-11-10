@@ -62,7 +62,8 @@ impl Filter {
         if name.is_empty() {
             return Err("A filter needs a name".into());
         }
-        if name.len() > MAX_NAME_LEN {
+        // Counted in characters, as the editor's `maxlength` counts them, not in UTF-8 bytes
+        if name.chars().count() > MAX_NAME_LEN {
             return Err(format!(
                 "Filter names can't be longer than {MAX_NAME_LEN} characters"
             ));
@@ -70,7 +71,7 @@ impl Filter {
         if self
             .description
             .as_ref()
-            .is_some_and(|d| d.len() > MAX_DESCRIPTION_LEN)
+            .is_some_and(|d| d.chars().count() > MAX_DESCRIPTION_LEN)
         {
             return Err(format!(
                 "Filter descriptions can't be longer than {MAX_DESCRIPTION_LEN} characters"
@@ -433,6 +434,22 @@ mod tests {
     fn test_validate_rejects_blank_name() {
         let mut f = filter(DEATH_LINK);
         f.rule.name = "  ".into();
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_counts_characters_not_bytes() {
+        // Three UTF-8 bytes each, so these fit in characters but not in bytes
+        let mut f = filter(DEATH_LINK);
+        f.rule.name = "名".repeat(MAX_NAME_LEN);
+        f.description = Some("説".repeat(MAX_DESCRIPTION_LEN));
+        assert_eq!(f.validate(), Ok(()));
+
+        f.rule.name.push('名');
+        assert!(f.validate().is_err());
+
+        f.rule.name = "Death link".into();
+        f.description.as_mut().unwrap().push('説');
         assert!(f.validate().is_err());
     }
 
