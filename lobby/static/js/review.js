@@ -364,6 +364,9 @@
     // mark is sent once the select has been left alone for a moment, or is left.
     const pendingMarks = new Map();
     const MARK_DELAY_MS = 800;
+    // Marks that were sent and aren't saved yet, by YAML: a reload in the meantime still shows
+    // them as saving instead of the status the server had before
+    const sendingMarks = new Map();
 
     function scheduleMark(yaml, status) {
         clearTimeout(pendingMarks.get(yaml.id)?.timer);
@@ -371,20 +374,38 @@
         pendingMarks.set(yaml.id, { timer, status, sha256: yaml.content_sha256 });
     }
 
-    function sendMark(yamlId) {
+    function sendMark(yamlId, options) {
         const pending = pendingMarks.get(yamlId);
         if (!pending) {
             return;
         }
         clearTimeout(pending.timer);
         pendingMarks.delete(yamlId);
-        markYaml(yamlId, pending.status, pending.sha256);
+        markYaml(yamlId, pending.status, pending.sha256, options);
     }
 
-    // Marks the version of the YAML the page has: the server refuses if it changed since
-    function markYaml(yamlId, status, sha256) {
-        change(() => request("PUT", `${api}/yamls/${yamlId}/mark`,
-            { status, content_sha256: sha256 }, { keepalive: true }));
+    // Marks the version of the YAML the page has: the server refuses if it changed since.
+    // `now` starts the request at once instead of after the changes before it, for when the
+    // page may be going away: `keepalive` only carries a request that has started. The reload
+    // after it still waits its turn.
+    function markYaml(yamlId, status, sha256, { now = false } = {}) {
+        const sending = { status };
+        sendingMarks.set(yamlId, sending);
+        const send = () => request("PUT", `${api}/yamls/${yamlId}/mark`,
+            { status, content_sha256: sha256 }, { keepalive: true });
+        const sent = now ? send() : null;
+        // A failure is reported once `change` waits for it
+        sent?.catch(() => {});
+        change(async () => {
+            try {
+                await (sent ?? send());
+            } finally {
+                // Unless the YAML was marked again since
+                if (sendingMarks.get(yamlId) === sending) {
+                    sendingMarks.delete(yamlId);
+                }
+            }
+        });
     }
 
     // Marks waiting for the select to be left alone are sent as soon as the page may go away:
@@ -392,7 +413,7 @@
     // before closing it on phones) and when it's left
     function sendPendingMarks() {
         for (const yamlId of [...pendingMarks.keys()]) {
-            sendMark(yamlId);
+            sendMark(yamlId, { now: true });
         }
     }
     document.addEventListener("visibilitychange", () => {
@@ -402,11 +423,12 @@
     });
     window.addEventListener("pagehide", sendPendingMarks);
 
-    // Shows a status that isn't saved yet the way it'll look once it is
+    // Shows a status that isn't saved yet the way it'll look once it is, marked as saving
     function showPendingMark(select, status) {
         select.value = status ?? "";
         select.className = `review-mark review-mark-${status ?? "none"}`;
         select.title = `${status ? STATUS_LABELS[status] : "Not reviewed"}, saving…`;
+        select.closest(".review-mark-wrapper")?.classList.add("review-mark-saving");
     }
 
     // The review status of a YAML, the select that changes it, and its comments
@@ -440,13 +462,18 @@
                     "aria-label": `Changed since it was marked ${STATUS_LABELS[status]}: keep it ${STATUS_LABELS[status]}`,
                     "data-focus": "changed",
                     text: "changed",
-                    onclick: () => markYaml(yaml.id, status, yaml.content_sha256),
+                    onclick: () => {
+                        showPendingMark(select, status);
+                        markYaml(yaml.id, status, yaml.content_sha256);
+                    },
                 }));
             }
         }
-        // A mark that's waiting to be sent is what the select shows, across reloads
-        if (pendingMarks.has(yaml.id)) {
-            showPendingMark(select, pendingMarks.get(yaml.id).status);
+        // A mark that's waiting to be sent, or sent and not saved yet, is what the select
+        // shows, across reloads
+        const unsaved = pendingMarks.get(yaml.id) ?? sendingMarks.get(yaml.id);
+        if (unsaved) {
+            showPendingMark(select, unsaved.status);
         }
 
         const comments = yaml.comment_count;
