@@ -91,16 +91,17 @@
 
     // Runs a change, then shows the tab as it is after it. Changes run one after the other,
     // each after the reload of the one before, so that a change made from what the page
-    // shows is made from what the server has.
+    // shows is made from what the server has. `reload` is `load`, or `loadStatus` for a
+    // change that can't change what the filters flag.
     let changes = Promise.resolve();
-    function change(action) {
+    function change(action, reload = load) {
         changes = changes.then(async () => {
             try {
                 await action();
             } catch (e) {
                 notify(e.message);
             }
-            await load();
+            await reload();
         });
         return changes;
     }
@@ -134,6 +135,38 @@
             return;
         }
         state = loaded;
+        render();
+    }
+
+    // Reloads only what reviewers made of each YAML and how much they said about it, which
+    // is all that a mark or a comment changes, without the server running the filters again.
+    // A YAML that was added, deleted or edited since the filters ran on it needs them run
+    // again, so that takes a full reload.
+    async function loadStatus() {
+        const thisLoad = ++latestLoad;
+        let loaded;
+        try {
+            loaded = await request("GET", `${api}/status`);
+        } catch (e) {
+            if (thisLoad === latestLoad) {
+                notify("Couldn't load the review: " + e.message);
+            }
+            return;
+        }
+        if (thisLoad !== latestLoad) {
+            return;
+        }
+        const unchanged = loaded.yamls.length === state.yamls.length
+            && loaded.yamls.every((yaml, i) => yaml.id === state.yamls[i].id
+                && yaml.content_sha256 === state.yamls[i].content_sha256);
+        if (!unchanged) {
+            await load();
+            return;
+        }
+        loaded.yamls.forEach((yaml, i) => {
+            state.yamls[i].mark = yaml.mark;
+            state.yamls[i].comment_count = yaml.comment_count;
+        });
         render();
     }
 
@@ -405,7 +438,7 @@
                     sendingMarks.delete(yamlId);
                 }
             }
-        });
+        }, loadStatus);
     }
 
     // Marks waiting for the select to be left alone are sent as soon as the page may go away:
@@ -815,7 +848,8 @@
         if (commentsYaml === yaml) {
             await refreshComments();
         }
-        change(() => {});
+        // The counts in the table: comments don't change what the filters flag
+        change(() => {}, loadStatus);
         return true;
     }
 
@@ -1252,7 +1286,9 @@
             saveButton.disabled = false;
         }
         editor.close();
-        await load();
+        // Queued with the other changes, so that it can't overtake a reload of theirs, or be
+        // overtaken by one
+        await change(() => {});
     });
 
     document.getElementById("review-new-filter").addEventListener("click", () => openEditor(null));

@@ -8,7 +8,9 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::db::{RoomId, YamlId};
 use crate::error::Result;
-use crate::schema::{room_review_filters, rooms, yaml_review_comments, yaml_review_marks};
+use crate::schema::{
+    discord_users, room_review_filters, rooms, yaml_review_comments, yaml_review_marks, yamls,
+};
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = room_review_filters)]
@@ -327,6 +329,29 @@ pub async fn get_review_marks(
     Ok(yaml_review_marks::table
         .filter(yaml_review_marks::room_id.eq(room_id))
         .select(ReviewMark::as_select())
+        .get_results(conn)
+        .await?)
+}
+
+/// The SHA-256 of the content each YAML of the room has now, as lowercase hex, by YAML in
+/// order: what `content_sha256` in `views::room::review` gives, worked out by the database
+/// so that the content itself doesn't have to be read. The YAMLs are those of
+/// `get_yamls_for_room_with_owner_names`, which the review lists.
+#[tracing::instrument(skip(conn))]
+pub async fn get_yaml_content_sha256s(
+    room_id: RoomId,
+    conn: &mut AsyncPgConnection,
+) -> Result<Vec<(YamlId, String)>> {
+    Ok(yamls::table
+        .filter(yamls::room_id.eq(room_id))
+        .inner_join(discord_users::table)
+        .order_by(yamls::id.asc())
+        .select((
+            yamls::id,
+            diesel::dsl::sql::<diesel::sql_types::Text>(
+                "encode(sha256(convert_to(coalesce(yamls.edited_content, yamls.content), 'UTF8')), 'hex')",
+            ),
+        ))
         .get_results(conn)
         .await?)
 }

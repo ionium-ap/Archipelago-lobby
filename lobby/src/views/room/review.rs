@@ -3,7 +3,8 @@
 //! Who can see it is up to `Room::can_review`. The filters are those of the `review-filters`
 //! crate: the builtin ones, which are on unless the room's reviewers turned them off, and the
 //! ones the reviewers defined for the room. The filters are evaluated every time the tab is
-//! loaded. What's stored about a YAML is what reviewers make of it (a mark, see
+//! loaded (`review_data`); after a mark or a comment the page reloads only `review_status`,
+//! which doesn't run them. What's stored about a YAML is what reviewers make of it (a mark, see
 //! `ReviewStatus`) and what they say about it (comments), none of which players see.
 
 use std::collections::HashMap;
@@ -262,6 +263,19 @@ struct MarkInfo {
     changed: bool,
 }
 
+impl MarkInfo {
+    /// A stored mark, for the YAML's content now as `content_sha256` gives it. `None` for a
+    /// status the lobby doesn't know.
+    fn new(mark: db::ReviewMark, content_sha256: &str) -> Option<Self> {
+        Some(Self {
+            status: ReviewStatus::from_db(&mark.status)?,
+            changed: mark.content_sha256 != content_sha256,
+            marked_by_name: mark.marked_by_name,
+            marked_at: mark.marked_at,
+        })
+    }
+}
+
 #[derive(Serialize)]
 struct ReviewData {
     builtins: Vec<BuiltinFilterInfo>,
@@ -349,14 +363,9 @@ async fn review_data(
             .iter()
             .map(|(yaml, owner_name)| {
                 let sha256 = content_sha256(yaml.current_content());
-                let mark = marks.remove(&yaml.id).and_then(|mark| {
-                    Some(MarkInfo {
-                        status: ReviewStatus::from_db(&mark.status)?,
-                        changed: mark.content_sha256 != sha256,
-                        marked_by_name: mark.marked_by_name,
-                        marked_at: mark.marked_at,
-                    })
-                });
+                let mark = marks
+                    .remove(&yaml.id)
+                    .and_then(|mark| MarkInfo::new(mark, &sha256));
                 YamlReview {
                     id: yaml.id,
                     player_name: yaml.player_name.clone(),
@@ -383,6 +392,59 @@ async fn review_data(
         filters,
         yamls: reviews,
     }))
+}
+
+#[derive(Serialize)]
+struct YamlStatus {
+    id: YamlId,
+    /// For the page to tell a YAML that was edited since it ran the filters on it
+    content_sha256: String,
+    mark: Option<MarkInfo>,
+    comment_count: i64,
+}
+
+#[derive(Serialize)]
+struct ReviewStatusData {
+    yamls: Vec<YamlStatus>,
+}
+
+/// What reviewers made of each YAML and how much they said about it, without running the
+/// filters: what the page reloads after a mark or a comment, which can't change what the
+/// filters flag. The YAMLs are those of `review_data`, in the same order.
+#[get("/api/room/<room_id>/review/status")]
+#[tracing::instrument(skip(session, ctx))]
+async fn review_status(
+    room_id: RoomId,
+    session: Session,
+    ctx: &State<Context>,
+) -> ApiResult<Json<ReviewStatusData>> {
+    let mut conn = ctx.db_pool.get().await?;
+    reviewable_room(room_id, &session, &mut conn).await?;
+
+    let hashes = db::get_yaml_content_sha256s(room_id, &mut conn).await?;
+    let mut marks = db::get_review_marks(room_id, &mut conn)
+        .await?
+        .into_iter()
+        .map(|mark| (mark.yaml_id, mark))
+        .collect::<HashMap<_, _>>();
+    let comment_counts = db::count_review_comments(room_id, &mut conn)
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+    let yamls = hashes
+        .into_iter()
+        .map(|(id, sha256)| YamlStatus {
+            id,
+            mark: marks
+                .remove(&id)
+                .and_then(|mark| MarkInfo::new(mark, &sha256)),
+            content_sha256: sha256,
+            comment_count: comment_counts.get(&id).copied().unwrap_or(0),
+        })
+        .collect();
+
+    Ok(Json(ReviewStatusData { yamls }))
 }
 
 #[post("/api/room/<room_id>/review/filters", data = "<data>")]
@@ -667,7 +729,8 @@ async fn import_filters(
     ))
 }
 
-/// What a mark remembers of the YAML's content, to tell whether it changed since
+/// What a mark remembers of the YAML's content, to tell whether it changed since.
+/// `db::get_yaml_content_sha256s` works out the same hash in SQL, and the two must agree.
 fn content_sha256(content: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(content.as_bytes());
@@ -938,6 +1001,7 @@ pub fn routes() -> Vec<rocket::Route> {
         delete_comment,
         review_page,
         review_data,
+        review_status,
         create_filter,
         update_filter,
         set_filter_enabled,
