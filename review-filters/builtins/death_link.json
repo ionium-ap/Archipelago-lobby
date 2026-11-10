@@ -1,0 +1,8 @@
+{
+  "name": "Death link",
+  "description": "Death link is on, or can roll on.",
+  "game": null,
+  "when": null,
+  "then": {"type": "check", "path": "death_link", "check": {"type": "truthy"}},
+  "severity": "info"
+}

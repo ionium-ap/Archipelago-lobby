@@ -1,0 +1,14 @@
+[package]
+name = "review-filters"
+version = "0.1.0"
+edition = "2024"
+
+# The filters a room's reviewers flag YAMLs with. The rules, triggers and builtin modules come
+# from community-ap-tools in ArchipelagoXL (MIT, Bastien Orivel), at 6db1ecc.
+
+[dependencies]
+anyhow = "1.0.86"
+regex = "1.11.1"
+saphyr = "0.0.6"
+serde = { version = "1.0.208", features = ["derive"] }
+serde_json = "1.0.125"

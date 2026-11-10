@@ -204,6 +204,7 @@ dependencies = [
  "redis",
  "regex",
  "reqwest 0.13.2",
+ "review-filters",
  "rocket",
  "rocket_oauth2",
  "rocket_prometheus",
@@ -4016,6 +4017,17 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "review-filters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "regex",
+ "saphyr",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

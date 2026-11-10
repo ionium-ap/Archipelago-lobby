@@ -1,0 +1,8 @@
+{
+  "name": "Item links",
+  "description": "The YAML has item links, which need every player in the link to agree on them.",
+  "game": null,
+  "when": null,
+  "then": {"type": "check", "path": "item_links", "check": {"type": "count", "check": {"type": "greater_than", "value": 0}}},
+  "severity": "info"
+}

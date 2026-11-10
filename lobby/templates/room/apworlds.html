@@ -12,6 +12,10 @@
         {% let gen_url = format!("/room/{}/generation", self.room.id) %}
         {% call menu::menu_item("Generation", "", gen_url, false, "genButton") %}{% endcall %}
     {% endif %}
+    {% if can_review %}
+        {% let review_url = format!("/room/{}/review", self.room.id) %}
+        {% call menu::menu_item("Review", "", review_url, false, "reviewButton") %}{% endcall %}
+    {% endif %}
 {% endblock %}
 
 {% block main %}

@@ -1,0 +1,201 @@
+{% extends "room/_base.html" %}
+
+{% block menu %}
+    {% let room_url = format!("/room/{}", self.room.id) %}
+    {% call menu::menu_item("Room", "", room_url, false, "room-menu") %}{% endcall %}
+    {% if room.settings.show_apworlds %}
+        {% let apworlds_url = format!("/room/{}/worlds", self.room.id) %}
+        {% call menu::menu_item("Apworlds", "", apworlds_url, false, "apworldsButton") %}{% endcall %}
+    {% endif %}
+    {% if is_my_room %}
+        {% let edit_url = format!("/edit-room/{}", self.room.id) %}
+        {% call menu::menu_item("Edit room", "", edit_url, false, "editButton") %}{% endcall %}
+        {% let gen_url = format!("/room/{}/generation", self.room.id) %}
+        {% call menu::menu_item("Generation", "", gen_url, false, "genButton") %}{% endcall %}
+    {% endif %}
+    {% let review_url = format!("/room/{}/review", self.room.id) %}
+    {% call menu::menu_item("Review", "", review_url, true, "reviewButton") %}{% endcall %}
+{% endblock %}
+
+{% block main %}
+
+<noscript>
+    Gotta enable javascript for this to work, sorry
+</noscript>
+
+<div id="review" data-room-id="{{ room.id }}">
+    {# Which section shows is in the URL's hash: #yamls (the default) or #filters #}
+    <nav class="review-tabs" role="tablist">
+        <a href="#yamls" role="tab" data-tab="yamls" class="selected">YAMLs <span class="review-tab-count" id="review-tab-count-yamls"></span></a>
+        <a href="#filters" role="tab" data-tab="filters">Filters <span class="review-tab-count" id="review-tab-count-filters"></span></a>
+    </nav>
+
+    <section id="review-section-yamls" role="tabpanel">
+    <div class="review-toolbar">
+        <input type="search" id="review-search" placeholder="Search players, games and uploaders">
+        <label class="review-option"><input type="checkbox" id="review-only-flagged" checked> Only flagged YAMLs</label>
+        <label class="review-option">Flags of at least
+            <select id="review-min-severity">
+                <option value="info">info</option>
+                <option value="warning">warning</option>
+                <option value="error">error</option>
+            </select>
+        </label>
+        <label class="review-option">Review
+            <select id="review-status-filter">
+                <option value="">any</option>
+                <option value="unreviewed">not reviewed</option>
+                <option value="ok">OK</option>
+                <option value="needs_changes">needs changes</option>
+                <option value="changed">changed since review</option>
+            </select>
+        </label>
+        <span id="review-summary" class="review-summary"></span>
+    </div>
+    <table class="styled review-results">
+        <thead>
+            <tr>
+                <th>Player</th>
+                <th>Game</th>
+                <th>Uploaded by</th>
+                <th>Flags</th>
+                <th class="shrink">Review</th>
+                <th class="shrink"></th>
+            </tr>
+        </thead>
+        <tbody id="review-results-body">
+            <tr><td colspan="6">Loading…</td></tr>
+        </tbody>
+    </table>
+    </section>
+
+    <section id="review-section-filters" role="tabpanel" hidden>
+    <p class="review-hint">
+        A filter flags the YAMLs whose options match it. Built-in filters come with the lobby, the
+        others are this room's and every reviewer can change them. Changes apply to the YAMLs tab
+        right away, and nothing is shown to the players.
+    </p>
+    <div class="review-toolbar">
+        <button id="review-new-filter" class="validation-button">New filter</button>
+        <button id="review-import">Import</button>
+        <input type="file" id="review-import-file" accept=".json,application/json" hidden>
+        <a class="button-emulator" id="review-export" href="/api/room/{{ room.id }}/review/export">Export the room's filters</a>
+        <span id="review-export-warning" class="review-filter-invalid" hidden></span>
+    </div>
+
+    <table class="styled review-filters">
+        <caption>This room's filters</caption>
+        <thead>
+            <tr>
+                <th class="shrink">On</th>
+                <th>Name</th>
+                <th>Game</th>
+                <th class="shrink">Severity</th>
+                <th>Last edited</th>
+                <th class="shrink"></th>
+            </tr>
+        </thead>
+        <tbody id="review-custom-body"></tbody>
+    </table>
+
+    <table class="styled review-filters">
+        <caption>Built-in filters</caption>
+        <thead>
+            <tr>
+                <th class="shrink">On</th>
+                <th>Name</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody id="review-builtin-body"></tbody>
+    </table>
+    </section>
+</div>
+
+<dialog id="review-editor" class="review-editor">
+    <h3 id="review-editor-title">New filter</h3>
+    <div class="review-editor-tabs">
+        <button type="button" data-tab="builder" class="selected">Builder</button>
+        <button type="button" data-tab="json">JSON</button>
+    </div>
+
+    <div id="review-editor-builder" class="review-editor-pane">
+        <label for="rf-name">Name</label>
+        <input type="text" id="rf-name" maxlength="200">
+
+        <label for="rf-description">Description</label>
+        <textarea id="rf-description" rows="2" maxlength="2000" placeholder="Why this is worth a look, shown to the other reviewers"></textarea>
+
+        <div class="review-editor-row">
+            <div>
+                <label for="rf-game">Game</label>
+                <input type="text" id="rf-game" list="rf-games" placeholder="Every game">
+                <datalist id="rf-games"></datalist>
+            </div>
+            <div>
+                <label for="rf-severity">Severity</label>
+                <select id="rf-severity">
+                    <option value="info">info</option>
+                    <option value="warning">warning</option>
+                    <option value="error">error</option>
+                </select>
+            </div>
+        </div>
+
+        <p class="review-hint">
+            Conditions look at the options of the game's section of the YAML, after its triggers.
+            An option is named by its key, like <code>death_link</code>, with dots for the keys
+            inside it, like <code>start_inventory.Sword</code>. An option with weights matches
+            when any of the values it can roll does.
+        </p>
+
+        <fieldset>
+            <legend>Flag the YAML when</legend>
+            <div id="rf-then"></div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Only for YAMLs where</legend>
+            <label class="review-option"><input type="checkbox" id="rf-when-enabled"> Only check YAMLs that match a condition first</label>
+            <div id="rf-when"></div>
+        </fieldset>
+    </div>
+
+    <div id="review-editor-json" class="review-editor-pane" hidden>
+        <p class="review-hint">The filter as it is exported. It's checked when saved.</p>
+        <textarea id="rf-json" spellcheck="false" rows="20"></textarea>
+    </div>
+
+    <p class="review-editor-error" id="review-editor-error" hidden></p>
+
+    <div class="modal-buttons">
+        <button type="button" id="rf-save">Save</button>
+        <button type="button" id="rf-cancel">Cancel</button>
+    </div>
+</dialog>
+
+<dialog id="review-comments" class="review-editor review-comments" aria-labelledby="review-comments-title">
+    <h3 id="review-comments-title">Comments</h3>
+    <p class="review-hint">Only the room's reviewers see these.</p>
+    <div id="review-comments-list" class="review-comments-list"></div>
+    <label for="review-comment-new">Add a comment</label>
+    <textarea id="review-comment-new" rows="3" maxlength="5000"></textarea>
+    <p class="review-editor-error" id="review-comments-error" hidden></p>
+    <div class="modal-buttons">
+        <button type="button" id="review-comment-add">Comment</button>
+        <button type="button" id="review-comments-close">Close</button>
+    </div>
+</dialog>
+
+{% endblock %}
+
+{% block styles %}
+<link rel="stylesheet" href="/static/contrib/highlight.js/monokai.min.css">
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/contrib/highlight.js/highlight.min.js" defer></script>
+<script src="/static/contrib/highlight.js/yaml.min.js" defer></script>
+<script src="/static/js/viewer.js?{{ base.js_version }}" defer></script>
+<script src="/static/js/review.js?{{ base.js_version }}" defer></script>
+{% endblock %}

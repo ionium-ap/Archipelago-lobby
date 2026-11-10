@@ -47,6 +47,22 @@ diesel::table! {
     use diesel::sql_types::*;
     use crate::db::types::sql::*;
 
+    room_review_filters (id) {
+        id -> Int4,
+        room_id -> SqlRoomId,
+        filter -> Jsonb,
+        position -> Int4,
+        enabled -> Bool,
+        last_edited_by -> Int8,
+        last_edited_by_name -> Varchar,
+        last_edited_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::db::types::sql::*;
+
     room_templates (id) {
         id -> SqlRoomTemplateId,
         name -> Varchar,
@@ -69,6 +85,7 @@ diesel::table! {
         is_bundle_room -> Bool,
         locked -> Bool,
         ap_version -> Nullable<Text>,
+        reviewer_list -> Array<Int8>,
     }
 }
 
@@ -97,6 +114,39 @@ diesel::table! {
         is_bundle_room -> Bool,
         locked -> Bool,
         ap_version -> Text,
+        reviewer_list -> Array<Int8>,
+        review_disabled_builtins -> Array<Text>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::db::types::sql::*;
+
+    yaml_review_comments (id) {
+        id -> Int4,
+        yaml_id -> SqlYamlId,
+        room_id -> SqlRoomId,
+        author_id -> Int8,
+        author_name -> Varchar,
+        content -> Text,
+        created_at -> Timestamp,
+        edited_at -> Nullable<Timestamp>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::db::types::sql::*;
+
+    yaml_review_marks (yaml_id) {
+        yaml_id -> SqlYamlId,
+        room_id -> SqlRoomId,
+        status -> Text,
+        content_sha256 -> Text,
+        marked_by -> Int8,
+        marked_by_name -> Varchar,
+        marked_at -> Timestamp,
     }
 }
 
@@ -132,9 +182,14 @@ diesel::table! {
 
 diesel::joinable!(generations -> rooms (room_id));
 diesel::joinable!(room_info -> rooms (room_id));
+diesel::joinable!(room_review_filters -> rooms (room_id));
 diesel::joinable!(room_templates -> discord_users (author_id));
 diesel::joinable!(rooms -> discord_users (author_id));
 diesel::joinable!(rooms -> room_templates (from_template_id));
+diesel::joinable!(yaml_review_comments -> rooms (room_id));
+diesel::joinable!(yaml_review_comments -> yamls (yaml_id));
+diesel::joinable!(yaml_review_marks -> rooms (room_id));
+diesel::joinable!(yaml_review_marks -> yamls (yaml_id));
 diesel::joinable!(yamls -> discord_users (owner_id));
 diesel::joinable!(yamls -> rooms (room_id));
 
@@ -142,7 +197,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     discord_users,
     generations,
     room_info,
+    room_review_filters,
     room_templates,
     rooms,
+    yaml_review_comments,
+    yaml_review_marks,
     yamls,
 );

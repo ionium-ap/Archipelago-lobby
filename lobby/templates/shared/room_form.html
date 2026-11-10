@@ -95,6 +95,13 @@
                 <input {{ ro }} {%+ if base.is_admin %}type="text"{%+ else %}type="hidden"{% endif +%} name="room.yaml_limit_bypass_list" id="yaml_limit_bypass_list" value="{{ self.room.yaml_limit_bypass_list|join(",") }}">
             </fieldset>
 
+            {# Who reviews someone else's rooms is none of the business of who reads their template #}
+            {% if !self.read_only %}
+            <label for="reviewer_list">YAML reviewers:</label>
+            <input type="text" name="room.reviewer_list" id="reviewer_list" value="{{ self.room.reviewer_list|join(",") }}" placeholder="Discord IDs, separated by commas">
+            <p class="form-hint">These people can see the room's Review tab, where filters flag YAMLs for a closer look. The room's owner can always see it.{% if !self.ty.is_room() %} Rooms made from this template start with them, but only your own rooms.{% endif %}</p>
+            {% endif %}
+
             <input {{ ro }} type="checkbox" name = "room.is_bundle_room" id ="is_bundle_room" {% if self.room.is_bundle_room %} checked {% endif %}>
             <label for="is_bundle_room" title="test">Keep YAMLs bundled on upload</label>
 

@@ -1,0 +1,8 @@
+{
+  "name": "Item plando",
+  "description": "The YAML places items itself with plando_items.",
+  "game": null,
+  "when": null,
+  "then": {"type": "check", "path": "plando_items", "check": {"type": "count", "check": {"type": "greater_than", "value": 0}}},
+  "severity": "info"
+}

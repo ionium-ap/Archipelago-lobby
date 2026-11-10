@@ -20,6 +20,7 @@ use crate::{Context, LobbyConfig, TplContext};
 pub struct RoomApworldsTpl<'a> {
     base: TplContext<'a>,
     is_my_room: bool,
+    can_review: bool,
     apworlds: Vec<(String, (World, Version))>,
     room: Room,
     // Ends the links to the options pages, so that they are about the room's Archipelago version
@@ -41,6 +42,7 @@ pub async fn room_worlds<'a>(
     let mut conn = ctx.db_pool.get().await?;
     let room = db::get_room(room_id, &mut conn).await?;
     let is_my_room = session.is_admin || session.user_id == Some(room.settings.author_id);
+    let can_review = room.can_review(session.is_admin, session.user_id);
 
     let index = index_manager.index_for(&room.ap_version).await?.clone();
     let (apworlds, resolve_errors) = room.settings.manifest.resolve_with(&index);
@@ -66,6 +68,7 @@ pub async fn room_worlds<'a>(
         )
         .await,
         is_my_room,
+        can_review,
         apworlds,
         room,
         options_query,

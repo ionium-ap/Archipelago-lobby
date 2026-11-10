@@ -27,6 +27,7 @@ pub struct NewRoom<'a> {
     pub yaml_validation: bool,
     pub allow_unsupported: bool,
     pub yaml_limit_bypass_list: Vec<i64>,
+    pub reviewer_list: Vec<i64>,
     pub manifest: Json<Manifest>,
     pub show_apworlds: bool,
     pub from_template_id: Option<Option<RoomTemplateId>>,
@@ -80,6 +81,7 @@ define_settings_structs! {
         allow_unsupported: bool,
         yaml_limit_per_user: Option<i32>,
         yaml_limit_bypass_list: Vec<i64>,
+        reviewer_list: Vec<i64>,
         manifest: Json<Manifest>,
         show_apworlds: bool,
         created_at: NaiveDateTime,
@@ -128,6 +130,7 @@ impl RoomSettings {
             allow_unsupported: false,
             yaml_limit_per_user: None,
             yaml_limit_bypass_list: vec![],
+            reviewer_list: vec![],
             manifest: Json(Manifest::from_index_with_default_versions(index)?),
             show_apworlds: true,
             created_at: Self::default_close_date()?,
@@ -150,6 +153,15 @@ impl RoomSettings {
 impl Room {
     pub fn is_closed(&self) -> bool {
         self.settings.close_date < chrono::offset::Utc::now().naive_utc()
+    }
+
+    /// Whether someone can see the room's review tab: admins, the room's owner, and the
+    /// people the owner listed as reviewers
+    pub fn can_review(&self, is_admin: bool, user_id: Option<i64>) -> bool {
+        is_admin
+            || user_id.is_some_and(|user_id| {
+                user_id == self.settings.author_id || self.settings.reviewer_list.contains(&user_id)
+            })
     }
 }
 

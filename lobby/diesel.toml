@@ -3,6 +3,8 @@ import_types = [ "diesel::sql_types::*", "crate::db::types::sql::*" ]
 
 [print_schema.patches.rooms]
 yaml_limit_bypass_list = { type = "Array<Int8>" }
+reviewer_list = { type = "Array<Int8>" }
+review_disabled_builtins = { type = "Array<Text>" }
 id = { type = "SqlRoomId" }
 from_template_id = { type = "Nullable<SqlRoomTemplateId>" }
 
@@ -15,6 +17,18 @@ bundle_id = { type = "SqlBundleId" }
 [print_schema.patches.room_templates]
 id = { type = "SqlRoomTemplateId" }
 yaml_limit_bypass_list = { type = "Array<Int8>" }
+reviewer_list = { type = "Array<Int8>" }
 
 [print_schema.patches.generations]
+room_id = { type = "SqlRoomId" }
+
+[print_schema.patches.room_review_filters]
+room_id = { type = "SqlRoomId" }
+
+[print_schema.patches.yaml_review_marks]
+yaml_id = { type = "SqlYamlId" }
+room_id = { type = "SqlRoomId" }
+
+[print_schema.patches.yaml_review_comments]
+yaml_id = { type = "SqlYamlId" }
 room_id = { type = "SqlRoomId" }

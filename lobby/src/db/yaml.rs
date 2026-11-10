@@ -221,6 +221,21 @@ pub async fn get_yaml_in_room_with_owner_name(
         .await?)
 }
 
+/// Every YAML of a room, with the Discord name of who uploaded it
+#[tracing::instrument(skip(conn))]
+pub async fn get_yamls_for_room_with_owner_names(
+    room_id: RoomId,
+    conn: &mut AsyncPgConnection,
+) -> Result<Vec<(Yaml, String)>> {
+    Ok(yamls::table
+        .filter(yamls::room_id.eq(room_id))
+        .inner_join(discord_users::table)
+        .order_by(yamls::id.asc())
+        .select((Yaml::as_select(), discord_users::username))
+        .get_results(conn)
+        .await?)
+}
+
 #[tracing::instrument(skip(conn))]
 pub async fn get_bundle_by_id(
     bundle_id: BundleId,

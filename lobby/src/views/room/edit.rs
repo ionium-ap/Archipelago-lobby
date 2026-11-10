@@ -82,7 +82,16 @@ pub async fn create_room<'a>(
             let template = db::get_room_template_by_id(template_id, &mut conn)
                 .await
                 .context("Couldn't get the specified template")?;
-            (template.global || template.settings.author_id == current_user_id).then_some(template)
+            let is_my_template = template.settings.author_id == current_user_id;
+            (template.global || is_my_template).then(|| {
+                let mut template = template;
+                // Someone else's reviewers have no business in this room: a template only
+                // brings its reviewer list to its author's rooms
+                if !is_my_template {
+                    template.settings.reviewer_list.clear();
+                }
+                template
+            })
         }
         None => None,
     };

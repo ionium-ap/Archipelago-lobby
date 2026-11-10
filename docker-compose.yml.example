@@ -69,7 +69,7 @@ services:
       # What a new room gets when nobody chooses. Without it, the newest of AP_BASES.
       # AP_DEFAULT_BASE: "0.6.8"
     working_dir: /builds/worker/checkout
-    command: sh -c "watchexec -w lobby -w Cargo.toml -w Cargo.lock -w Rocket.toml -w apwm -w wq -r cargo run"
+    command: sh -c "watchexec -w lobby -w Cargo.toml -w Cargo.lock -w Rocket.toml -w apwm -w wq -w review-filters -r cargo run"
     user: "${USER_ID}:${GID}"
     depends_on:
       vol-setup:

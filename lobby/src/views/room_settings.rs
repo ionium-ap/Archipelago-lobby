@@ -38,6 +38,9 @@ pub struct RoomSettingsForm<'a> {
     pub yaml_limit_per_user: bool,
     pub yaml_limit_per_user_nb: i32,
     pub yaml_limit_bypass_list: &'a str,
+    // A form from before there were reviewers doesn't have it
+    #[field(default = "")]
+    pub reviewer_list: &'a str,
     pub show_apworlds: bool,
     pub me: ManifestForm<'a>,
     pub meta_file: String,
@@ -71,6 +74,7 @@ impl<'a> RoomSettingsForm<'a> {
                 .split(',')
                 .filter_map(|id| i64::from_str(id).ok())
                 .collect(),
+            reviewer_list: parse_discord_ids(self.reviewer_list),
             manifest: db::Json(manifest_from_form(&self.me, index)?),
             show_apworlds: self.show_apworlds,
             from_template_id,
@@ -81,6 +85,21 @@ impl<'a> RoomSettingsForm<'a> {
             ap_version,
         })
     }
+}
+
+/// Reads a comma separated list of Discord IDs. Spaces and empty entries are allowed, and
+/// anything that isn't an ID is left out: `validate_room_form` refuses those beforehand.
+pub fn parse_discord_ids(ids: &str) -> Vec<i64> {
+    let mut parsed = Vec::new();
+    for id in ids
+        .split(',')
+        .filter_map(|id| i64::from_str(id.trim()).ok())
+    {
+        if !parsed.contains(&id) {
+            parsed.push(id);
+        }
+    }
+    parsed
 }
 
 pub fn parse_date(date: &str, tz_offset: i32) -> Result<DateTime<Utc>> {
@@ -159,6 +178,18 @@ pub fn validate_room_form(room_form: &mut RoomSettingsForm<'_>) -> Result<()> {
                 .into());
             }
         }
+    }
+
+    let invalid_reviewer = room_form
+        .reviewer_list
+        .split(',')
+        .map(str::trim)
+        .find(|id| !id.is_empty() && i64::from_str(id).is_err());
+    if let Some(invalid_reviewer) = invalid_reviewer {
+        return Err(anyhow::anyhow!(
+            "The reviewer list should be a comma delimited list of discord IDs, \"{invalid_reviewer}\" isn't one."
+        )
+        .into());
     }
 
     room_form.meta_file = room_form.meta_file.trim().to_string();
@@ -373,6 +404,13 @@ mod tests {
 
     fn limit() -> NaiveDateTime {
         now() + Duration::days(MAX_DAYS_UNTIL_CLOSE)
+    }
+
+    #[test]
+    fn test_parse_discord_ids() {
+        assert_eq!(parse_discord_ids(""), Vec::<i64>::new());
+        assert_eq!(parse_discord_ids("1,2"), vec![1, 2]);
+        assert_eq!(parse_discord_ids(" 1 , 2, ,1,"), vec![1, 2]);
     }
 
     #[test]

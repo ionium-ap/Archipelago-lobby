@@ -1,0 +1,8 @@
+{
+  "name": "Minimal accessibility",
+  "description": "Accessibility is set to minimal, so some locations may be unreachable and the items in them lost.",
+  "game": null,
+  "when": null,
+  "then": {"type": "check", "path": "accessibility", "check": {"type": "equals", "value": "minimal"}},
+  "severity": "warning"
+}
