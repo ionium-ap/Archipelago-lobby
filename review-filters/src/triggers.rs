@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use saphyr::{LoadableYamlNode, YamlOwned as Value};
+use saphyr::{ScalarOwned, YamlOwned as Value};
 
 use crate::yaml_value_as_string;
 
@@ -157,7 +157,7 @@ pub fn resolve_triggers(yaml: &Value) -> Value {
             break;
         }
 
-        current = set_yaml_values(&current, &changes);
+        set_yaml_values(&mut current, changes);
     }
 
     current
@@ -176,135 +176,49 @@ fn yaml_values_equal(a: &Value, b: &Value) -> bool {
     false
 }
 
+/// Applies a `+option` from a trigger, following `update_weights` in Archipelago's
+/// Generate.py: an option that isn't set yet takes the addition as is, two mappings add up
+/// their counts, and two lists are joined. Archipelago rejects any other pair as an invalid
+/// trigger; here those fall back to the existing list, if any, followed by the addition.
 fn merge_additive(existing: Option<&Value>, addition: &Value) -> Value {
-    // If existing is a list and addition is a list, concatenate
-    // Otherwise just use the addition
-    let mut items = Vec::new();
-
-    if let Some(existing) = existing
-        && let Some(seq) = existing.as_sequence()
-    {
-        for item in seq {
-            items.push(format!("- {}", yaml_value_to_inline(item)));
-        }
-    }
-
-    if let Some(seq) = addition.as_sequence() {
-        for item in seq {
-            items.push(format!("- {}", yaml_value_to_inline(item)));
-        }
-    } else {
-        items.push(format!("- {}", yaml_value_to_inline(addition)));
-    }
-
-    let yaml_str = items.join("\n");
-    Value::load_from_str(&yaml_str)
-        .ok()
-        .and_then(|mut docs| docs.pop())
-        .unwrap_or_else(|| addition.clone())
-}
-
-fn yaml_value_to_inline(val: &Value) -> String {
-    if let Some(s) = val.as_str() {
-        let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-        return format!("\"{}\"", escaped);
-    }
-    if let Some(b) = val.as_bool() {
-        return b.to_string();
-    }
-    if let Some(i) = val.as_integer() {
-        return i.to_string();
-    }
-    if let Some(f) = val.as_floating_point() {
-        return f.to_string();
-    }
-    "null".to_string()
-}
-
-fn set_yaml_values(yaml: &Value, changes: &HashMap<(&str, &str), Value>) -> Value {
-    let mut lines = Vec::new();
-    let Some(top_map) = yaml.as_mapping() else {
-        return yaml.clone();
+    let Some(existing) = existing else {
+        return addition.clone();
     };
 
-    // Group changes by game for efficient lookup
-    let mut by_game: HashMap<&str, HashMap<&str, &Value>> = HashMap::new();
+    if let (Some(existing_map), Some(addition_map)) = (existing.as_mapping(), addition.as_mapping())
+    {
+        let mut merged = existing_map.clone();
+        for (key, value) in addition_map {
+            let sum = merged
+                .get(key)
+                .and_then(Value::as_integer)
+                .zip(value.as_integer())
+                .map(|(a, b)| Value::Value(ScalarOwned::Integer(a.saturating_add(b))));
+            merged.insert(key.clone(), sum.unwrap_or_else(|| value.clone()));
+        }
+        return Value::Mapping(merged);
+    }
+
+    let mut items: Vec<Value> = existing.as_sequence().cloned().unwrap_or_default();
+    match addition.as_sequence() {
+        Some(seq) => items.extend(seq.iter().cloned()),
+        None => items.push(addition.clone()),
+    }
+    Value::Sequence(items)
+}
+
+/// Writes each change into its game's section of the parsed YAML, leaving every other node
+/// as it was parsed. A game whose section is missing or isn't a mapping is skipped.
+fn set_yaml_values(yaml: &mut Value, changes: HashMap<(&str, &str), Value>) {
     for ((game, key), value) in changes {
-        by_game.entry(game).or_default().insert(key, value);
-    }
-
-    for (top_key, top_val) in top_map.iter() {
-        let top_key_str = top_key.as_str().unwrap_or("");
-        lines.push(format!("{}:", top_key_str));
-
-        if let Some(game_changes) = by_game.get(top_key_str) {
-            if let Some(game_map) = top_val.as_mapping() {
-                let mut seen_keys = std::collections::HashSet::new();
-                for (opt_key, opt_val) in game_map.iter() {
-                    let opt_key_str = opt_key.as_str().unwrap_or("");
-                    seen_keys.insert(opt_key_str);
-                    if let Some(new_val) = game_changes.get(opt_key_str) {
-                        serialize_yaml_entry(&mut lines, opt_key_str, new_val, 2);
-                    } else {
-                        serialize_yaml_entry(&mut lines, opt_key_str, opt_val, 2);
-                    }
-                }
-                for (key, val) in game_changes {
-                    if !seen_keys.contains(key) {
-                        serialize_yaml_entry(&mut lines, key, val, 2);
-                    }
-                }
-            } else {
-                serialize_yaml_value(&mut lines, top_val, 2);
-            }
-        } else {
-            serialize_yaml_value(&mut lines, top_val, 2);
+        let Some(game_section) = yaml.as_mapping_get_mut(game) else {
+            continue;
+        };
+        if let Some(existing) = game_section.as_mapping_get_mut(key) {
+            *existing = value;
+        } else if let Some(game_map) = game_section.as_mapping_mut() {
+            game_map.insert(Value::Value(ScalarOwned::String(key.to_string())), value);
         }
-    }
-
-    let rebuilt = lines.join("\n");
-    Value::load_from_str(&rebuilt)
-        .ok()
-        .and_then(|mut docs| docs.pop())
-        .unwrap_or_else(|| yaml.clone())
-}
-
-fn serialize_yaml_entry(lines: &mut Vec<String>, key: &str, value: &Value, indent: usize) {
-    let prefix = " ".repeat(indent);
-    if let Some(map) = value.as_mapping() {
-        lines.push(format!("{}{}:", prefix, key));
-        for (k, v) in map.iter() {
-            let k_str = k.as_str().unwrap_or("");
-            serialize_yaml_entry(lines, k_str, v, indent + 2);
-        }
-    } else if let Some(seq) = value.as_sequence() {
-        lines.push(format!("{}{}:", prefix, key));
-        for item in seq {
-            lines.push(format!("{}  - {}", prefix, yaml_value_to_inline(item)));
-        }
-    } else {
-        lines.push(format!(
-            "{}{}: {}",
-            prefix,
-            key,
-            yaml_value_to_inline(value)
-        ));
-    }
-}
-
-fn serialize_yaml_value(lines: &mut Vec<String>, value: &Value, indent: usize) {
-    let prefix = " ".repeat(indent);
-    if let Some(map) = value.as_mapping() {
-        for (k, v) in map.iter() {
-            let k_str = k.as_str().unwrap_or("");
-            serialize_yaml_entry(lines, k_str, v, indent);
-        }
-    } else if let Some(seq) = value.as_sequence() {
-        for item in seq {
-            lines.push(format!("{}- {}", prefix, yaml_value_to_inline(item)));
-        }
-    } else {
-        lines.push(format!("{}{}", prefix, yaml_value_to_inline(value)));
     }
 }
 
@@ -478,6 +392,113 @@ Test:
             .as_mapping_get("extra_option")
             .unwrap();
         assert_eq!(extra.as_str().unwrap(), "enabled");
+    }
+
+    const FIRING_TRIGGER: &str = r#"
+triggers:
+  - option_category: Test
+    option_name: mode
+    option_result: hard
+    options:
+      Test:
+        extra_option: enabled
+"#;
+
+    #[test]
+    fn test_fired_trigger_keeps_non_string_keys() {
+        let raw = format!(
+            "{FIRING_TRIGGER}Test:\n  mode: hard\n  death_link:\n    false: 0\n    true: 50\n"
+        );
+        let resolved = resolve_triggers(&parse_yaml(&raw));
+        let death_link = resolved
+            .as_mapping_get("Test")
+            .unwrap()
+            .as_mapping_get("death_link")
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let weight_of = |b: bool| {
+            death_link
+                .get(&Value::Value(ScalarOwned::Boolean(b)))
+                .and_then(Value::as_integer)
+        };
+        assert_eq!(weight_of(false), Some(0));
+        assert_eq!(weight_of(true), Some(50));
+    }
+
+    #[test]
+    fn test_fired_trigger_keeps_mappings_inside_lists() {
+        let raw = format!(
+            "{FIRING_TRIGGER}Test:\n  mode: hard\n  plando_items:\n    - items:\n        Sword: 1\n      world: P2\n"
+        );
+        let resolved = resolve_triggers(&parse_yaml(&raw));
+        let entry = &resolved
+            .as_mapping_get("Test")
+            .unwrap()
+            .as_mapping_get("plando_items")
+            .unwrap()
+            .as_sequence()
+            .unwrap()[0];
+        assert_eq!(entry.as_mapping_get("world").unwrap().as_str(), Some("P2"));
+        let sword = entry
+            .as_mapping_get("items")
+            .unwrap()
+            .as_mapping_get("Sword");
+        assert_eq!(sword.and_then(Value::as_integer), Some(1));
+    }
+
+    #[test]
+    fn test_trigger_sets_weighted_mapping() {
+        let raw = r#"
+triggers:
+  - option_category: Test
+    option_name: mode
+    option_result: hard
+    options:
+      Test:
+        death_link:
+          true: 1
+Test:
+  mode: hard
+  death_link: false
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        let death_link = resolved
+            .as_mapping_get("Test")
+            .unwrap()
+            .as_mapping_get("death_link")
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let weight = death_link
+            .get(&Value::Value(ScalarOwned::Boolean(true)))
+            .and_then(Value::as_integer);
+        assert_eq!(weight, Some(1));
+    }
+
+    #[test]
+    fn test_merge_additive_unset_option_takes_addition_as_is() {
+        let addition = parse_yaml("Sword: 1\n");
+        assert_eq!(merge_additive(None, &addition), addition);
+    }
+
+    #[test]
+    fn test_merge_additive_mappings_add_counts() {
+        let existing = parse_yaml("Sword: 1\nShield: 2\n");
+        let addition = parse_yaml("Sword: 2\nBow: 1\n");
+        let merged = merge_additive(Some(&existing), &addition);
+        let count = |item| merged.as_mapping_get(item).and_then(Value::as_integer);
+        assert_eq!(count("Sword"), Some(3));
+        assert_eq!(count("Shield"), Some(2));
+        assert_eq!(count("Bow"), Some(1));
+    }
+
+    #[test]
+    fn test_merge_additive_lists_join() {
+        let existing = parse_yaml("- Sword\n");
+        let addition = parse_yaml("- Bow\n- Shield\n");
+        let merged = merge_additive(Some(&existing), &addition);
+        assert_eq!(merged, parse_yaml("- Sword\n- Bow\n- Shield\n"));
     }
 
     #[test]
