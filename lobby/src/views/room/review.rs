@@ -211,19 +211,29 @@ struct CustomFilterInfo {
     last_edited_at: NaiveDateTime,
 }
 
-impl From<ReviewFilter> for CustomFilterInfo {
-    fn from(f: ReviewFilter) -> Self {
-        let error = serde_json::from_value::<Filter>(f.filter.clone())
-            .err()
-            .map(|e| e.to_string());
-        Self {
+impl CustomFilterInfo {
+    /// Reads a stored filter once, for both what the page shows and what's evaluated: the
+    /// filter comes back when it can be read, and `error` says why when it can't.
+    fn parse(f: ReviewFilter) -> (Self, Option<Filter>) {
+        let (parsed, error) = match Filter::deserialize(&f.filter) {
+            Ok(filter) => (Some(filter), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        let info = Self {
             id: f.id,
             enabled: f.enabled,
             filter: f.filter,
             error,
             last_edited_by_name: f.last_edited_by_name,
             last_edited_at: f.last_edited_at,
-        }
+        };
+        (info, parsed)
+    }
+}
+
+impl From<ReviewFilter> for CustomFilterInfo {
+    fn from(f: ReviewFilter) -> Self {
+        Self::parse(f).0
     }
 }
 
@@ -294,24 +304,22 @@ async fn review_data(
         })
         .collect::<Vec<_>>();
 
-    let filters = stored_filters
+    let (filters, parsed): (Vec<_>, Vec<_>) = stored_filters
         .into_iter()
-        .map(CustomFilterInfo::from)
-        .collect::<Vec<_>>();
+        .map(CustomFilterInfo::parse)
+        .unzip();
 
     let enabled_builtin_ids = builtins
         .iter()
         .filter(|b| b.enabled)
         .map(|b| b.id.clone())
         .collect::<Vec<_>>();
+    // The ones that can't be read are left out, as their `error` tells the page
     let enabled_filters = filters
         .iter()
-        .filter(|f| f.enabled && f.error.is_none())
-        .filter_map(|f| {
-            serde_json::from_value::<Filter>(f.filter.clone())
-                .ok()
-                .map(|filter| (f.id, filter))
-        })
+        .zip(parsed)
+        .filter(|(info, _)| info.enabled)
+        .filter_map(|(info, filter)| Some((info.id, filter?)))
         .collect::<Vec<_>>();
 
     let reviews = tokio::task::spawn_blocking(move || {
@@ -946,7 +954,40 @@ pub fn routes() -> Vec<rocket::Route> {
 
 #[cfg(test)]
 mod tests {
-    use super::file_stem;
+    use super::{file_stem, CustomFilterInfo};
+    use crate::db::{ReviewFilter, RoomId};
+
+    fn stored(filter: serde_json::Value) -> ReviewFilter {
+        ReviewFilter {
+            id: 1,
+            room_id: RoomId::new_v4(),
+            filter,
+            position: 0,
+            enabled: true,
+            last_edited_by: 1,
+            last_edited_by_name: "Reviewer".into(),
+            last_edited_at: chrono::DateTime::UNIX_EPOCH.naive_utc(),
+        }
+    }
+
+    #[test]
+    fn test_custom_filter_info_parses_once_for_both() {
+        let readable = serde_json::json!({
+            "name": "Death link",
+            "then": {"type": "check", "path": "death_link", "check": {"type": "exists"}},
+            "severity": "info",
+        });
+        let (info, filter) = CustomFilterInfo::parse(stored(readable.clone()));
+        assert!(info.error.is_none());
+        assert_eq!(info.filter, readable);
+        assert_eq!(filter.unwrap().rule.name, "Death link");
+
+        let unreadable = serde_json::json!({"name": "Old shape", "rule": "gone"});
+        let (info, filter) = CustomFilterInfo::parse(stored(unreadable.clone()));
+        assert!(info.error.is_some());
+        assert_eq!(info.filter, unreadable);
+        assert!(filter.is_none());
+    }
 
     #[test]
     fn test_file_stem() {
