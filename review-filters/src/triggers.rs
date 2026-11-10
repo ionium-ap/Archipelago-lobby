@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use saphyr::{ScalarOwned, YamlOwned as Value};
 
 use crate::yaml_value_as_string;
@@ -25,11 +23,29 @@ fn value_can_match(val: &Value, trigger_result: &str) -> bool {
     false
 }
 
+/// How a trigger's option changes the existing one, from the prefix on its name.
+#[derive(Clone, Copy)]
+enum Merge {
+    /// No prefix: the trigger's value replaces the option.
+    Replace,
+    /// `+option`: the trigger's value is added to the option.
+    Add,
+    /// `-option`: the trigger's value is removed from the option.
+    Remove,
+}
+
+struct TriggerOption {
+    game: String,
+    key: String,
+    value: Value,
+    merge: Merge,
+}
+
 struct Trigger {
     option_category: String,
     option_name: String,
     option_result: String,
-    options: Vec<(String, String, Value, bool)>, // (game, key, value, is_additive)
+    options: Vec<TriggerOption>,
 }
 
 fn parse_trigger(trigger_yaml: &Value) -> Option<Trigger> {
@@ -46,14 +62,20 @@ fn parse_trigger(trigger_yaml: &Value) -> Option<Trigger> {
             if let Some(inner) = game_opts.as_mapping() {
                 for (opt_key, opt_val) in inner.iter() {
                     let raw_key = opt_key.as_str()?;
-                    let is_additive = raw_key.starts_with('+');
-                    let key = if is_additive { &raw_key[1..] } else { raw_key };
-                    options.push((
-                        game_name.to_string(),
-                        key.to_string(),
-                        opt_val.clone(),
-                        is_additive,
-                    ));
+                    // Archipelago strips every leading `+` and `-`, and the first one decides.
+                    let merge = if raw_key.starts_with('+') {
+                        Merge::Add
+                    } else if raw_key.starts_with('-') {
+                        Merge::Remove
+                    } else {
+                        Merge::Replace
+                    };
+                    options.push(TriggerOption {
+                        game: game_name.to_string(),
+                        key: raw_key.trim_start_matches(['+', '-']).to_string(),
+                        value: opt_val.clone(),
+                        merge,
+                    });
                 }
             }
         }
@@ -74,12 +96,11 @@ fn parse_triggers_from(val: &Value) -> impl Iterator<Item = Trigger> + '_ {
         .filter_map(parse_trigger)
 }
 
-fn collect_triggers(yaml: &Value) -> Vec<Trigger> {
+/// The triggers in each game section, in the order the sections appear. Archipelago runs only
+/// the rolled game's section triggers; a review can't know which game a weighted `game` rolls,
+/// so it runs them all.
+fn game_section_triggers(yaml: &Value) -> Vec<Trigger> {
     let mut triggers = Vec::new();
-
-    if let Some(top_triggers) = yaml.as_mapping_get("triggers") {
-        triggers.extend(parse_triggers_from(top_triggers));
-    }
 
     if let Some(map) = yaml.as_mapping() {
         for (key, game_section) in map.iter() {
@@ -98,82 +119,50 @@ fn collect_triggers(yaml: &Value) -> Vec<Trigger> {
     triggers
 }
 
+/// Applies the YAML's triggers the way `roll_settings` in Archipelago's Generate.py does: the
+/// top-level triggers first, then the game sections' triggers as they stand after those, each
+/// trigger once and in order, so a trigger sees what earlier ones changed but not later ones.
+/// Archipelago rolls the option a trigger checks; here a trigger fires if any weighted value of
+/// that option could match.
 pub fn resolve_triggers(yaml: &Value) -> Value {
-    let triggers = collect_triggers(yaml);
-    if triggers.is_empty() {
-        return yaml.clone();
+    let mut current = yaml.clone();
+
+    let top_level: Vec<Trigger> = yaml
+        .as_mapping_get("triggers")
+        .map(|triggers| parse_triggers_from(triggers).collect())
+        .unwrap_or_default();
+    for trigger in &top_level {
+        apply_trigger(&mut current, trigger);
     }
 
-    let mut current = yaml.clone();
-    let mut iterations = 0;
-    const MAX_ITERATIONS: usize = 50;
-
-    loop {
-        iterations += 1;
-        if iterations > MAX_ITERATIONS {
-            break;
-        }
-
-        let triggers = collect_triggers(&current);
-        // game -> key -> value
-        let mut changes: HashMap<(&str, &str), Value> = HashMap::new();
-
-        for trigger in &triggers {
-            let option_val = current
-                .as_mapping_get(&trigger.option_category)
-                .and_then(|game| game.as_mapping_get(&trigger.option_name));
-
-            let Some(option_val) = option_val else {
-                continue;
-            };
-
-            if !value_can_match(option_val, &trigger.option_result) {
-                continue;
-            }
-
-            for (game, key, value, is_additive) in &trigger.options {
-                let Some(game_section) = current.as_mapping_get(game) else {
-                    continue;
-                };
-
-                if *is_additive {
-                    let existing = game_section.as_mapping_get(key);
-                    let merged = merge_additive(existing, value);
-                    if existing.is_some_and(|e| e == &merged) {
-                        continue;
-                    }
-                    changes.insert((game, key), merged);
-                } else {
-                    let existing = game_section.as_mapping_get(key);
-                    if existing.is_some_and(|e| yaml_values_equal(e, value)) {
-                        continue;
-                    }
-                    changes.insert((game, key), value.clone());
-                }
-            }
-        }
-
-        if changes.is_empty() {
-            break;
-        }
-
-        set_yaml_values(&mut current, changes);
+    for trigger in &game_section_triggers(&current) {
+        apply_trigger(&mut current, trigger);
     }
 
     current
 }
 
-fn yaml_values_equal(a: &Value, b: &Value) -> bool {
-    if let (Some(a_str), Some(b_str)) = (a.as_str(), b.as_str()) {
-        return a_str == b_str;
+fn apply_trigger(yaml: &mut Value, trigger: &Trigger) {
+    let fires = yaml
+        .as_mapping_get(&trigger.option_category)
+        .and_then(|game| game.as_mapping_get(&trigger.option_name))
+        .is_some_and(|option| value_can_match(option, &trigger.option_result));
+    if !fires {
+        return;
     }
-    if let (Some(a_int), Some(b_int)) = (a.as_integer(), b.as_integer()) {
-        return a_int == b_int;
+
+    for option in &trigger.options {
+        let Some(game_section) = yaml.as_mapping_get_mut(&option.game) else {
+            continue;
+        };
+        let existing = game_section.as_mapping_get(&option.key);
+        let new_value = match option.merge {
+            Merge::Replace => option.value.clone(),
+            Merge::Add => merge_additive(existing, &option.value),
+            Merge::Remove => merge_removal(existing, &option.value),
+        };
+        set_option(game_section, &option.key, new_value);
     }
-    if let (Some(a_bool), Some(b_bool)) = (a.as_bool(), b.as_bool()) {
-        return a_bool == b_bool;
-    }
-    false
 }
 
 /// Applies a `+option` from a trigger, following `update_weights` in Archipelago's
@@ -194,7 +183,7 @@ fn merge_additive(existing: Option<&Value>, addition: &Value) -> Value {
                 .and_then(Value::as_integer)
                 .zip(value.as_integer())
                 .map(|(a, b)| Value::Value(ScalarOwned::Integer(a.saturating_add(b))));
-            merged.insert(key.clone(), sum.unwrap_or_else(|| value.clone()));
+            merged.replace(key.clone(), sum.unwrap_or_else(|| value.clone()));
         }
         return Value::Mapping(merged);
     }
@@ -207,18 +196,59 @@ fn merge_additive(existing: Option<&Value>, addition: &Value) -> Value {
     Value::Sequence(items)
 }
 
-/// Writes each change into its game's section of the parsed YAML, leaving every other node
-/// as it was parsed. A game whose section is missing or isn't a mapping is skipped.
-fn set_yaml_values(yaml: &mut Value, changes: HashMap<(&str, &str), Value>) {
-    for ((game, key), value) in changes {
-        let Some(game_section) = yaml.as_mapping_get_mut(game) else {
-            continue;
-        };
-        if let Some(existing) = game_section.as_mapping_get_mut(key) {
-            *existing = value;
-        } else if let Some(game_map) = game_section.as_mapping_mut() {
-            game_map.insert(Value::Value(ScalarOwned::String(key.to_string())), value);
+/// Applies a `-option` from a trigger, following `update_weights` in Archipelago's
+/// Generate.py: each listed value is removed from a list once, at its first match, and a
+/// mapping's counts are subtracted, keeping zero and negative results. An option that isn't set
+/// yet takes the trigger's value as is, as Archipelago does. Archipelago rejects any other pair,
+/// and removing a list value that isn't there, as an invalid trigger; here those leave the
+/// option as it was.
+fn merge_removal(existing: Option<&Value>, removal: &Value) -> Value {
+    let Some(existing) = existing else {
+        return removal.clone();
+    };
+
+    if let (Some(existing_map), Some(removal_map)) = (existing.as_mapping(), removal.as_mapping()) {
+        let mut merged = existing_map.clone();
+        for (key, value) in removal_map {
+            let Some(amount) = value.as_integer() else {
+                continue;
+            };
+            let count = match merged.get(key) {
+                None => 0,
+                Some(current) => match current.as_integer() {
+                    Some(count) => count,
+                    None => continue,
+                },
+            };
+            merged.replace(
+                key.clone(),
+                Value::Value(ScalarOwned::Integer(count.saturating_sub(amount))),
+            );
         }
+        return Value::Mapping(merged);
+    }
+
+    if let (Some(existing_seq), Some(removal_seq)) = (existing.as_sequence(), removal.as_sequence())
+    {
+        let mut items = existing_seq.clone();
+        for value in removal_seq {
+            if let Some(index) = items.iter().position(|item| item == value) {
+                items.remove(index);
+            }
+        }
+        return Value::Sequence(items);
+    }
+
+    existing.clone()
+}
+
+/// Sets one option in a game section, in place, leaving every other node as it was parsed.
+/// A game section that isn't a mapping is left alone.
+fn set_option(game_section: &mut Value, key: &str, value: Value) {
+    if let Some(existing) = game_section.as_mapping_get_mut(key) {
+        *existing = value;
+    } else if let Some(game_map) = game_section.as_mapping_mut() {
+        game_map.insert(Value::Value(ScalarOwned::String(key.to_string())), value);
     }
 }
 
@@ -502,8 +532,7 @@ Test:
     }
 
     #[test]
-    fn test_max_iteration_cap() {
-        // Two triggers that fire each other forever
+    fn test_triggers_fire_each_other_without_looping() {
         let raw = r#"
 triggers:
   - option_category: Test
@@ -522,8 +551,163 @@ Test:
   a: "1"
   b: "0"
 "#;
-        let yaml = parse_yaml(raw);
-        // Should not infinite loop — just terminates after MAX_ITERATIONS
-        let _resolved = resolve_triggers(&yaml);
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(game_option(&resolved, "Test", "a").as_str(), Some("1"));
+        assert_eq!(game_option(&resolved, "Test", "b").as_str(), Some("1"));
+    }
+
+    fn game_option<'a>(yaml: &'a Value, game: &str, key: &str) -> &'a Value {
+        yaml.as_mapping_get(game)
+            .unwrap()
+            .as_mapping_get(key)
+            .unwrap_or_else(|| panic!("{game} has no {key}"))
+    }
+
+    #[test]
+    fn test_triggers_apply_in_order() {
+        // Top-level triggers run before the game section's, each once: the first trigger
+        // checks `b` before the second sets it, and the game section's trigger sees `x`, which
+        // a top-level trigger set.
+        let raw = r#"
+triggers:
+  - option_category: Test
+    option_name: b
+    option_result: "1"
+    options:
+      Test:
+        c: "1"
+  - option_category: Test
+    option_name: a
+    option_result: "1"
+    options:
+      Test:
+        b: "1"
+        x: "1"
+Test:
+  a: "1"
+  b: "0"
+  triggers:
+    - option_category: Test
+      option_name: x
+      option_result: "1"
+      options:
+        Test:
+          y: "1"
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        let test = resolved.as_mapping_get("Test").unwrap();
+        assert_eq!(game_option(&resolved, "Test", "b").as_str(), Some("1"));
+        assert!(test.as_mapping_get("c").is_none());
+        assert_eq!(game_option(&resolved, "Test", "y").as_str(), Some("1"));
+    }
+
+    #[test]
+    fn test_additive_list_trigger_applies_once() {
+        // The example in Archipelago's worlds/generic/docs/triggers_en.md.
+        let raw = r#"
+Super Metroid:
+  start_location:
+    landing_site: 50
+    aqueduct: 50
+  start_hints:
+    - Morph Ball
+  start_inventory:
+    Power Bombs: 1
+  triggers:
+    - option_category: Super Metroid
+      option_name: start_location
+      option_result: aqueduct
+      options:
+        Super Metroid:
+          +start_hints:
+            - Gravity Suit
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Super Metroid", "start_hints"),
+            &parse_yaml("- Morph Ball\n- Gravity Suit\n")
+        );
+    }
+
+    #[test]
+    fn test_additive_mapping_trigger_applies_once() {
+        let raw = r#"
+Test:
+  mode: hard
+  start_inventory:
+    Power Bombs: 1
+  triggers:
+    - option_category: Test
+      option_name: mode
+      option_result: hard
+      options:
+        Test:
+          +start_inventory:
+            Power Bombs: 1
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        let inventory = game_option(&resolved, "Test", "start_inventory");
+        let power_bombs = inventory.as_mapping_get("Power Bombs");
+        assert_eq!(power_bombs.and_then(Value::as_integer), Some(2));
+    }
+
+    #[test]
+    fn test_removal_trigger_on_list() {
+        let raw = r#"
+Test:
+  mode: hard
+  start_hints:
+    - Morph Ball
+    - Gravity Suit
+    - Morph Ball
+  triggers:
+    - option_category: Test
+      option_name: mode
+      option_result: hard
+      options:
+        Test:
+          -start_hints:
+            - Morph Ball
+            - Screw Attack
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        let test = resolved.as_mapping_get("Test").unwrap();
+        assert_eq!(
+            game_option(&resolved, "Test", "start_hints"),
+            &parse_yaml("- Gravity Suit\n- Morph Ball\n")
+        );
+        assert!(test.as_mapping_get("-start_hints").is_none());
+    }
+
+    #[test]
+    fn test_removal_trigger_on_mapping() {
+        let raw = r#"
+Test:
+  mode: hard
+  start_inventory:
+    Power Bombs: 1
+    Missile: 5
+  triggers:
+    - option_category: Test
+      option_name: mode
+      option_result: hard
+      options:
+        Test:
+          -start_inventory:
+            Power Bombs: 1
+            Super Missile: 2
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        let inventory = game_option(&resolved, "Test", "start_inventory");
+        let count = |item| inventory.as_mapping_get(item).and_then(Value::as_integer);
+        assert_eq!(count("Power Bombs"), Some(0));
+        assert_eq!(count("Missile"), Some(5));
+        assert_eq!(count("Super Missile"), Some(-2));
+    }
+
+    #[test]
+    fn test_merge_removal_unset_option_takes_value_as_is() {
+        let removal = parse_yaml("- Morph Ball\n");
+        assert_eq!(merge_removal(None, &removal), removal);
     }
 }
