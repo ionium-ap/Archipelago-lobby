@@ -849,9 +849,7 @@ async fn add_comment(
     let room = reviewable_room(room_id, &session, &mut conn).await?;
     yaml_in_room(room_id, yaml_id, &mut conn).await?;
 
-    let existing = db::get_review_comments(room_id, yaml_id, &mut conn)
-        .await?
-        .len();
+    let existing = db::count_yaml_review_comments(room_id, yaml_id, &mut conn).await? as usize;
     if existing >= MAX_COMMENTS_PER_YAML {
         return Err(bad_request(anyhow!(
             "A YAML can't have more than {MAX_COMMENTS_PER_YAML} comments"

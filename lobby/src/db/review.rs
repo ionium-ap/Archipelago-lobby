@@ -409,6 +409,21 @@ pub async fn count_review_comments(
         .await?)
 }
 
+/// How many comments one YAML has
+#[tracing::instrument(skip(conn))]
+pub async fn count_yaml_review_comments(
+    room_id: RoomId,
+    yaml_id: YamlId,
+    conn: &mut AsyncPgConnection,
+) -> Result<i64> {
+    Ok(yaml_review_comments::table
+        .filter(yaml_review_comments::room_id.eq(room_id))
+        .filter(yaml_review_comments::yaml_id.eq(yaml_id))
+        .count()
+        .get_result(conn)
+        .await?)
+}
+
 #[tracing::instrument(skip(conn))]
 pub async fn get_review_comments(
     room_id: RoomId,
