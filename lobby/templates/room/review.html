@@ -80,6 +80,7 @@
         <button id="review-import">Import</button>
         <input type="file" id="review-import-file" accept=".json,application/json" hidden>
         <a class="button-emulator" id="review-export" href="/api/room/{{ room.id }}/review/export">Export the room's filters</a>
+        <span id="review-export-warning" class="review-filter-invalid" hidden></span>
     </div>
 
     <table class="styled review-filters">

@@ -539,6 +539,14 @@
         const body = document.getElementById("review-custom-body");
         body.replaceChildren();
 
+        // The export only has the filters that can be read
+        const unreadable = state.filters.filter((f) => f.error).length;
+        const exportWarning = document.getElementById("review-export-warning");
+        exportWarning.hidden = unreadable === 0;
+        exportWarning.textContent = unreadable === 1
+            ? "1 filter can't be read and won't be in the export. Fix it to include it."
+            : `${unreadable} filters can't be read and won't be in the export. Fix them to include them.`;
+
         if (state.filters.length === 0) {
             body.append(el("tr", {}, el("td", {
                 colspan: 6,
@@ -568,12 +576,19 @@
                     onclick: () => move(entry.id, 1),
                 }, el("i", { class: "fa fa-arrow-down" })),
                 el("button", { text: "Edit", onclick: () => openEditor(entry) }),
-                el("a", {
-                    class: "button-emulator",
-                    href: `${api}/filters/${entry.id}/export`,
-                    title: "Download this filter, in the format of the lobby's built-in filters",
-                    text: "Export",
-                }),
+                // The server can't export a filter it can't read
+                entry.error
+                    ? el("button", {
+                        disabled: true,
+                        title: "This filter can't be read: fix it to export it",
+                        text: "Export",
+                    })
+                    : el("a", {
+                        class: "button-emulator",
+                        href: `${api}/filters/${entry.id}/export`,
+                        title: "Download this filter, in the format of the lobby's built-in filters",
+                        text: "Export",
+                    }),
                 el("button", {
                     class: "cancel-button",
                     text: "Delete",
