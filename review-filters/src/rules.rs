@@ -446,13 +446,6 @@ pub fn evaluate_rule(rule: &Rule, yaml: &Value, game_name: &str) -> RuleResult {
     }
 }
 
-pub fn evaluate_rules_for_yaml(rules: &[Rule], yaml: &Value, game_name: &str) -> Vec<RuleResult> {
-    rules
-        .iter()
-        .map(|rule| evaluate_rule(rule, yaml, game_name))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

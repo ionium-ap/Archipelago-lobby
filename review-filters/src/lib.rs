@@ -11,7 +11,7 @@ pub mod builtin;
 pub mod rules;
 pub mod triggers;
 
-pub use builtin::{BuiltinRule, BuiltinRuleInfo, RoomYaml, builtin_rule_info, builtin_rules};
+pub use builtin::{BuiltinRule, RoomYaml, builtin_rules};
 pub use rules::{Outcome, Predicate, Rule, RuleCheck, Severity};
 
 pub const MAX_NAME_LEN: usize = 200;

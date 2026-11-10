@@ -45,24 +45,6 @@ pub fn builtin_rules() -> &'static [Box<dyn BuiltinRule>] {
     &BUILTIN_RULES
 }
 
-pub fn builtin_rule_info() -> Vec<BuiltinRuleInfo> {
-    builtin_rules()
-        .iter()
-        .map(|r| BuiltinRuleInfo {
-            id: r.id().to_string(),
-            name: r.name().to_string(),
-            description: r.description().to_string(),
-        })
-        .collect()
-}
-
-#[derive(serde::Serialize)]
-pub struct BuiltinRuleInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-}
-
 /// A builtin file holds one filter in the format of an export's entries
 fn parse_builtin_filter(content: &str) -> Result<Filter, String> {
     let filter: Filter = serde_json::from_str(content).map_err(|e| e.to_string())?;
