@@ -2,34 +2,29 @@ use saphyr::{ScalarOwned, YamlOwned as Value};
 
 use crate::yaml_value_as_string;
 
-fn is_trueish_match(option_val: &Value, trigger_result: &str) -> bool {
-    yaml_value_as_string(option_val).is_some_and(|s| s == trigger_result)
+/// Every value `get_choice` in Archipelago's Generate.py could roll from `val`. It takes a
+/// plain value as is, rolls a mapping by its weights, and picks a list's element at random, so
+/// these are the value itself, the keys with a nonzero weight, or the list's elements.
+fn possible_choices(val: &Value) -> Vec<&Value> {
+    if let Some(seq) = val.as_sequence() {
+        return seq.iter().collect();
+    }
+    if let Some(map) = val.as_mapping() {
+        return map
+            .iter()
+            .filter(|(_, weight)| weight.as_integer().unwrap_or(0) != 0)
+            .map(|(key, _)| key)
+            .collect();
+    }
+    vec![val]
 }
 
-/// Whether the option a trigger checks could roll `trigger_result`. Archipelago's `get_choice`
-/// takes a plain value as is, rolls a mapping by its weights, and picks a list's element at
-/// random, so a weighted value with a nonzero weight or any element of a list could match.
-fn value_can_match(val: &Value, trigger_result: &str) -> bool {
-    if is_trueish_match(val, trigger_result) {
-        return true;
-    }
-
-    if let Some(seq) = val.as_sequence() {
-        return seq
-            .iter()
-            .any(|item| is_trueish_match(item, trigger_result));
-    }
-
-    if let Some(map) = val.as_mapping() {
-        for (key, weight) in map.iter() {
-            let w = weight.as_integer().unwrap_or(0);
-            if w != 0 && is_trueish_match(key, trigger_result) {
-                return true;
-            }
-        }
-    }
-
-    false
+/// Whether the option a trigger checks could roll one of the trigger's results.
+fn value_can_match(val: &Value, trigger_results: &[String]) -> bool {
+    possible_choices(val)
+        .into_iter()
+        .filter_map(yaml_value_as_string)
+        .any(|choice| trigger_results.contains(&choice))
 }
 
 /// How a trigger's option changes the existing one, from the prefix on its name.
@@ -55,8 +50,10 @@ struct TriggerOption {
 struct Trigger {
     /// The section the checked option is in: a game's name, or `None` for the top level.
     option_category: Option<String>,
-    option_name: String,
-    option_result: String,
+    /// Every name `option_name` could roll; Archipelago rolls it like an option.
+    option_names: Vec<String>,
+    /// Every result `option_result` could roll.
+    option_results: Vec<String>,
     /// False when the trigger's `percentage` rules out firing.
     can_fire: bool,
     options: Vec<TriggerOption>,
@@ -116,16 +113,9 @@ fn percentage_can_fire(percentage: Option<&Value>) -> bool {
     let Some(percentage) = percentage else {
         return true;
     };
-    let above_zero = |val: &Value| percentage_value(val).is_none_or(|p| p > 0.0);
-    if let Some(map) = percentage.as_mapping() {
-        return map
-            .iter()
-            .any(|(value, weight)| weight.as_integer().unwrap_or(0) != 0 && above_zero(value));
-    }
-    if let Some(seq) = percentage.as_sequence() {
-        return seq.iter().any(above_zero);
-    }
-    above_zero(percentage)
+    possible_choices(percentage)
+        .into_iter()
+        .any(|val| percentage_value(val).is_none_or(|p| p > 0.0))
 }
 
 fn percentage_value(val: &Value) -> Option<f64> {
@@ -141,14 +131,27 @@ fn parse_trigger(trigger_yaml: &Value) -> Option<Trigger> {
         Some(category) => parse_category(category)?,
         None => None,
     };
-    let name = trigger_yaml.as_mapping_get("option_name")?.as_str()?;
-    let result_str = yaml_value_as_string(trigger_yaml.as_mapping_get("option_result")?)?;
+    // Archipelago rolls `option_name` and `option_result` with `get_choice` too, so either can
+    // be weighted or a list.
+    let option_names: Vec<String> = possible_choices(trigger_yaml.as_mapping_get("option_name")?)
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let option_results: Vec<String> =
+        possible_choices(trigger_yaml.as_mapping_get("option_result")?)
+            .into_iter()
+            .filter_map(yaml_value_as_string)
+            .collect();
+    if option_names.is_empty() || option_results.is_empty() {
+        return None;
+    }
     let options = parse_options(trigger_yaml.as_mapping_get("options")?)?;
 
     Some(Trigger {
         option_category: category,
-        option_name: name.to_string(),
-        option_result: result_str,
+        option_names,
+        option_results,
         can_fire: percentage_can_fire(trigger_yaml.as_mapping_get("percentage")),
         options,
     })
@@ -200,8 +203,9 @@ fn game_section_triggers(yaml: &Value) -> Vec<Trigger> {
 /// Generate.py does: the linked options first, then the top-level triggers, then the game
 /// sections' triggers, each read as the YAML stands after the step before. Each one applies
 /// once and in order, so it sees what earlier ones changed but not later ones. Archipelago
-/// rolls the option a trigger checks and the percentages; here a trigger fires if any weighted
-/// value of that option could match, and a percentage above zero always lets it.
+/// rolls a trigger's option name, its result, the option it checks, and the percentages; here
+/// a trigger fires if any name it could roll names an option that could roll any of its
+/// results, and a percentage above zero always lets it.
 pub fn resolve_triggers(yaml: &Value) -> Value {
     let mut current = yaml.clone();
 
@@ -241,9 +245,13 @@ fn section_mut<'a>(yaml: &'a mut Value, category: Option<&str>) -> Option<&'a mu
 
 fn apply_trigger(yaml: &mut Value, trigger: &Trigger) {
     let fires = trigger.can_fire
-        && section(yaml, trigger.option_category.as_deref())
-            .and_then(|section| section.as_mapping_get(&trigger.option_name))
-            .is_some_and(|option| value_can_match(option, &trigger.option_result));
+        && section(yaml, trigger.option_category.as_deref()).is_some_and(|section| {
+            trigger
+                .option_names
+                .iter()
+                .filter_map(|name| section.as_mapping_get(name))
+                .any(|option| value_can_match(option, &trigger.option_results))
+        });
     if fires {
         apply_options(yaml, &trigger.options);
     }
@@ -865,6 +873,77 @@ Test:
           death_link: true
     - option_category: Test
       option_name: difficulty
+      option_result: hard
+      options:
+        Test:
+          goal: never
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Test", "death_link").as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            game_option(&resolved, "Test", "goal").as_str(),
+            Some("beat_the_game")
+        );
+    }
+
+    #[test]
+    fn test_trigger_with_weighted_result_fires_on_any_it_could_roll() {
+        let raw = r#"
+Test:
+  mode: hard
+  death_link: false
+  goal: beat_the_game
+  triggers:
+    - option_category: Test
+      option_name: mode
+      option_result:
+        easy: 50
+        hard: 50
+      options:
+        Test:
+          death_link: true
+    - option_category: Test
+      option_name: mode
+      option_result:
+        easy: 50
+        hard: 0
+      options:
+        Test:
+          goal: never
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Test", "death_link").as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            game_option(&resolved, "Test", "goal").as_str(),
+            Some("beat_the_game")
+        );
+    }
+
+    #[test]
+    fn test_trigger_with_rolled_name_checks_every_name_it_could_roll() {
+        let raw = r#"
+Test:
+  mode: easy
+  difficulty: hard
+  death_link: false
+  goal: beat_the_game
+  triggers:
+    - option_category: Test
+      option_name: [mode, difficulty]
+      option_result: hard
+      options:
+        Test:
+          death_link: true
+    - option_category: Test
+      option_name:
+        mode: 1
+        difficulty: 0
       option_result: hard
       options:
         Test:
