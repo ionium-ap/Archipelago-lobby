@@ -34,59 +34,127 @@ enum Merge {
     Remove,
 }
 
+/// One option a trigger or linked option changes.
 struct TriggerOption {
-    game: String,
+    /// The section the option is in: a game's name, or `None` for the top level.
+    category: Option<String>,
     key: String,
     value: Value,
     merge: Merge,
 }
 
 struct Trigger {
-    option_category: String,
+    /// The section the checked option is in: a game's name, or `None` for the top level.
+    option_category: Option<String>,
     option_name: String,
     option_result: String,
+    /// False when the trigger's `percentage` rules out firing.
+    can_fire: bool,
     options: Vec<TriggerOption>,
 }
 
-fn parse_trigger(trigger_yaml: &Value) -> Option<Trigger> {
-    let category = trigger_yaml.as_mapping_get("option_category")?.as_str()?;
-    let name = trigger_yaml.as_mapping_get("option_name")?.as_str()?;
-    let result_str = yaml_value_as_string(trigger_yaml.as_mapping_get("option_result")?)?;
+/// Reads a section name the way Archipelago does, where `null` or an empty name means the top
+/// level. `None` when the name is neither null nor a string.
+fn parse_category(val: &Value) -> Option<Option<String>> {
+    if val.is_null() {
+        return Some(None);
+    }
+    let name = val.as_str()?;
+    Some((!name.is_empty()).then(|| name.to_string()))
+}
 
-    let options_map = trigger_yaml.as_mapping_get("options")?;
+/// Reads the `options` of a trigger or linked option, the options it changes grouped by
+/// section. `None` when a section name or an option name can't be read.
+fn parse_options(options_yaml: &Value) -> Option<Vec<TriggerOption>> {
     let mut options = Vec::new();
+    let Some(outer) = options_yaml.as_mapping() else {
+        return Some(options);
+    };
 
-    if let Some(outer) = options_map.as_mapping() {
-        for (game_key, game_opts) in outer.iter() {
-            let game_name = game_key.as_str()?;
-            if let Some(inner) = game_opts.as_mapping() {
-                for (opt_key, opt_val) in inner.iter() {
-                    let raw_key = opt_key.as_str()?;
-                    // Archipelago strips every leading `+` and `-`, and the first one decides.
-                    let merge = if raw_key.starts_with('+') {
-                        Merge::Add
-                    } else if raw_key.starts_with('-') {
-                        Merge::Remove
-                    } else {
-                        Merge::Replace
-                    };
-                    options.push(TriggerOption {
-                        game: game_name.to_string(),
-                        key: raw_key.trim_start_matches(['+', '-']).to_string(),
-                        value: opt_val.clone(),
-                        merge,
-                    });
-                }
-            }
+    for (category_key, category_options) in outer.iter() {
+        let category = parse_category(category_key)?;
+        let Some(inner) = category_options.as_mapping() else {
+            continue;
+        };
+        for (opt_key, opt_val) in inner.iter() {
+            let raw_key = opt_key.as_str()?;
+            // Archipelago strips every leading `+` and `-`, and the first one decides.
+            let merge = if raw_key.starts_with('+') {
+                Merge::Add
+            } else if raw_key.starts_with('-') {
+                Merge::Remove
+            } else {
+                Merge::Replace
+            };
+            options.push(TriggerOption {
+                category: category.clone(),
+                key: raw_key.trim_start_matches(['+', '-']).to_string(),
+                value: opt_val.clone(),
+                merge,
+            });
         }
     }
 
+    Some(options)
+}
+
+/// Whether a `percentage` lets a trigger or linked option fire at all. Archipelago fires when a
+/// random number is below `percentage / 100`, so any percentage above zero can. A weighted
+/// percentage, or a list of them, can if any value it could roll is above zero. A percentage
+/// that's missing (100 for a trigger) or isn't a number (which Archipelago rejects at upload)
+/// counts as able to fire.
+fn percentage_can_fire(percentage: Option<&Value>) -> bool {
+    let Some(percentage) = percentage else {
+        return true;
+    };
+    let above_zero = |val: &Value| percentage_value(val).is_none_or(|p| p > 0.0);
+    if let Some(map) = percentage.as_mapping() {
+        return map
+            .iter()
+            .any(|(value, weight)| weight.as_integer().unwrap_or(0) != 0 && above_zero(value));
+    }
+    if let Some(seq) = percentage.as_sequence() {
+        return seq.iter().any(above_zero);
+    }
+    above_zero(percentage)
+}
+
+fn percentage_value(val: &Value) -> Option<f64> {
+    val.as_integer()
+        .map(|i| i as f64)
+        .or_else(|| val.as_floating_point())
+        .or_else(|| val.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn parse_trigger(trigger_yaml: &Value) -> Option<Trigger> {
+    // Archipelago takes a missing category as the top level, as it does `null`.
+    let category = match trigger_yaml.as_mapping_get("option_category") {
+        Some(category) => parse_category(category)?,
+        None => None,
+    };
+    let name = trigger_yaml.as_mapping_get("option_name")?.as_str()?;
+    let result_str = yaml_value_as_string(trigger_yaml.as_mapping_get("option_result")?)?;
+    let options = parse_options(trigger_yaml.as_mapping_get("options")?)?;
+
     Some(Trigger {
-        option_category: category.to_string(),
+        option_category: category,
         option_name: name.to_string(),
         option_result: result_str,
+        can_fire: percentage_can_fire(trigger_yaml.as_mapping_get("percentage")),
         options,
     })
+}
+
+/// The options of each top-level linked option that could fire, in order. Each is applied
+/// like a trigger without a condition: Archipelago rolls only its `percentage`.
+fn linked_options(yaml: &Value) -> Vec<Vec<TriggerOption>> {
+    yaml.as_mapping_get("linked_options")
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|linked| percentage_can_fire(linked.as_mapping_get("percentage")))
+        .filter_map(|linked| parse_options(linked.as_mapping_get("options")?))
+        .collect()
 }
 
 fn parse_triggers_from(val: &Value) -> impl Iterator<Item = Trigger> + '_ {
@@ -119,15 +187,20 @@ fn game_section_triggers(yaml: &Value) -> Vec<Trigger> {
     triggers
 }
 
-/// Applies the YAML's triggers the way `roll_settings` in Archipelago's Generate.py does: the
-/// top-level triggers first, then the game sections' triggers as they stand after those, each
-/// trigger once and in order, so a trigger sees what earlier ones changed but not later ones.
-/// Archipelago rolls the option a trigger checks; here a trigger fires if any weighted value of
-/// that option could match.
+/// Applies the YAML's linked options and triggers the way `roll_settings` in Archipelago's
+/// Generate.py does: the linked options first, then the top-level triggers, then the game
+/// sections' triggers, each read as the YAML stands after the step before. Each one applies
+/// once and in order, so it sees what earlier ones changed but not later ones. Archipelago
+/// rolls the option a trigger checks and the percentages; here a trigger fires if any weighted
+/// value of that option could match, and a percentage above zero always lets it.
 pub fn resolve_triggers(yaml: &Value) -> Value {
     let mut current = yaml.clone();
 
-    let top_level: Vec<Trigger> = yaml
+    for options in &linked_options(yaml) {
+        apply_options(&mut current, options);
+    }
+
+    let top_level: Vec<Trigger> = current
         .as_mapping_get("triggers")
         .map(|triggers| parse_triggers_from(triggers).collect())
         .unwrap_or_default();
@@ -142,31 +215,48 @@ pub fn resolve_triggers(yaml: &Value) -> Value {
     current
 }
 
-fn apply_trigger(yaml: &mut Value, trigger: &Trigger) {
-    let fires = yaml
-        .as_mapping_get(&trigger.option_category)
-        .and_then(|game| game.as_mapping_get(&trigger.option_name))
-        .is_some_and(|option| value_can_match(option, &trigger.option_result));
-    if !fires {
-        return;
+/// A section of the YAML: a game's, or the top level for `None`.
+fn section<'a>(yaml: &'a Value, category: Option<&str>) -> Option<&'a Value> {
+    match category {
+        Some(name) => yaml.as_mapping_get(name),
+        None => Some(yaml),
     }
+}
 
-    for option in &trigger.options {
-        let Some(game_section) = yaml.as_mapping_get_mut(&option.game) else {
+fn section_mut<'a>(yaml: &'a mut Value, category: Option<&str>) -> Option<&'a mut Value> {
+    match category {
+        Some(name) => yaml.as_mapping_get_mut(name),
+        None => Some(yaml),
+    }
+}
+
+fn apply_trigger(yaml: &mut Value, trigger: &Trigger) {
+    let fires = trigger.can_fire
+        && section(yaml, trigger.option_category.as_deref())
+            .and_then(|section| section.as_mapping_get(&trigger.option_name))
+            .is_some_and(|option| value_can_match(option, &trigger.option_result));
+    if fires {
+        apply_options(yaml, &trigger.options);
+    }
+}
+
+fn apply_options(yaml: &mut Value, options: &[TriggerOption]) {
+    for option in options {
+        let Some(section) = section_mut(yaml, option.category.as_deref()) else {
             continue;
         };
-        let existing = game_section.as_mapping_get(&option.key);
+        let existing = section.as_mapping_get(&option.key);
         let new_value = match option.merge {
             Merge::Replace => option.value.clone(),
             Merge::Add => merge_additive(existing, &option.value),
             Merge::Remove => merge_removal(existing, &option.value),
         };
-        set_option(game_section, &option.key, new_value);
+        set_option(section, &option.key, new_value);
     }
 }
 
-/// Applies a `+option` from a trigger, following `update_weights` in Archipelago's
-/// Generate.py: an option that isn't set yet takes the addition as is, two mappings add up
+/// Applies a `+option` from a trigger or linked option, following `update_weights` in
+/// Archipelago's Generate.py: an option that isn't set yet takes the addition as is, two mappings add up
 /// their counts, and two lists are joined. Archipelago rejects any other pair as an invalid
 /// trigger; here those fall back to the existing list, if any, followed by the addition.
 fn merge_additive(existing: Option<&Value>, addition: &Value) -> Value {
@@ -196,10 +286,10 @@ fn merge_additive(existing: Option<&Value>, addition: &Value) -> Value {
     Value::Sequence(items)
 }
 
-/// Applies a `-option` from a trigger, following `update_weights` in Archipelago's
-/// Generate.py: each listed value is removed from a list once, at its first match, and a
-/// mapping's counts are subtracted, keeping zero and negative results. An option that isn't set
-/// yet takes the trigger's value as is, as Archipelago does. Archipelago rejects any other pair,
+/// Applies a `-option` from a trigger or linked option, following `update_weights` in
+/// Archipelago's Generate.py: each listed value is removed from a list once, at its first
+/// match, and a mapping's counts are subtracted, keeping zero and negative results. An option
+/// that isn't set yet takes the trigger's value as is, as Archipelago does. Archipelago rejects any other pair,
 /// and removing a list value that isn't there, as an invalid trigger; here those leave the
 /// option as it was.
 fn merge_removal(existing: Option<&Value>, removal: &Value) -> Value {
@@ -242,13 +332,13 @@ fn merge_removal(existing: Option<&Value>, removal: &Value) -> Value {
     existing.clone()
 }
 
-/// Sets one option in a game section, in place, leaving every other node as it was parsed.
-/// A game section that isn't a mapping is left alone.
-fn set_option(game_section: &mut Value, key: &str, value: Value) {
-    if let Some(existing) = game_section.as_mapping_get_mut(key) {
+/// Sets one option in a section, in place, leaving every other node as it was parsed.
+/// A section that isn't a mapping is left alone.
+fn set_option(section: &mut Value, key: &str, value: Value) {
+    if let Some(existing) = section.as_mapping_get_mut(key) {
         *existing = value;
-    } else if let Some(game_map) = game_section.as_mapping_mut() {
-        game_map.insert(Value::Value(ScalarOwned::String(key.to_string())), value);
+    } else if let Some(map) = section.as_mapping_mut() {
+        map.insert(Value::Value(ScalarOwned::String(key.to_string())), value);
     }
 }
 
@@ -703,6 +793,120 @@ Test:
         assert_eq!(count("Power Bombs"), Some(0));
         assert_eq!(count("Missile"), Some(5));
         assert_eq!(count("Super Missile"), Some(-2));
+    }
+
+    #[test]
+    fn test_trigger_without_category_checks_the_top_level() {
+        let raw = r#"
+game:
+  Test: 1
+  Other: 0
+triggers:
+  - option_name: game
+    option_result: Test
+    options:
+      Test:
+        death_link: true
+Test:
+  death_link: false
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Test", "death_link").as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_null_category_means_the_top_level() {
+        let raw = r#"
+game: Test
+description: before
+triggers:
+  - option_category: null
+    option_name: game
+    option_result: Test
+    options:
+      null:
+        description: after
+      "":
+        name: Renamed
+Test: {}
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        let top = |key| resolved.as_mapping_get(key).and_then(Value::as_str);
+        assert_eq!(top("description"), Some("after"));
+        assert_eq!(top("name"), Some("Renamed"));
+    }
+
+    #[test]
+    fn test_trigger_with_zero_percentage_never_fires() {
+        let raw = r#"
+Test:
+  mode: hard
+  death_link: false
+  triggers:
+    - option_category: Test
+      option_name: mode
+      option_result: hard
+      percentage: 0
+      options:
+        Test:
+          death_link: true
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Test", "death_link").as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_linked_options_apply_before_triggers() {
+        let raw = r#"
+linked_options:
+  - name: Hard mode
+    percentage: 25
+    options:
+      Test:
+        mode: hard
+        +start_inventory:
+          Sword: 1
+  - name: Never
+    percentage: 0
+    options:
+      Test:
+        goal: never
+triggers:
+  - option_category: Test
+    option_name: mode
+    option_result: hard
+    options:
+      Test:
+        death_link: true
+Test:
+  mode: easy
+  goal: beat_the_game
+  death_link: false
+  start_inventory:
+    Sword: 1
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Test", "mode").as_str(),
+            Some("hard")
+        );
+        assert_eq!(
+            game_option(&resolved, "Test", "death_link").as_bool(),
+            Some(true)
+        );
+        let inventory = game_option(&resolved, "Test", "start_inventory");
+        let swords = inventory.as_mapping_get("Sword");
+        assert_eq!(swords.and_then(Value::as_integer), Some(2));
+        assert_eq!(
+            game_option(&resolved, "Test", "goal").as_str(),
+            Some("beat_the_game")
+        );
     }
 
     #[test]
