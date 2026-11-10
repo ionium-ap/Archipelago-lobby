@@ -6,9 +6,18 @@ fn is_trueish_match(option_val: &Value, trigger_result: &str) -> bool {
     yaml_value_as_string(option_val).is_some_and(|s| s == trigger_result)
 }
 
+/// Whether the option a trigger checks could roll `trigger_result`. Archipelago's `get_choice`
+/// takes a plain value as is, rolls a mapping by its weights, and picks a list's element at
+/// random, so a weighted value with a nonzero weight or any element of a list could match.
 fn value_can_match(val: &Value, trigger_result: &str) -> bool {
     if is_trueish_match(val, trigger_result) {
         return true;
+    }
+
+    if let Some(seq) = val.as_sequence() {
+        return seq
+            .iter()
+            .any(|item| is_trueish_match(item, trigger_result));
     }
 
     if let Some(map) = val.as_mapping() {
@@ -837,6 +846,39 @@ Test: {}
         let top = |key| resolved.as_mapping_get(key).and_then(Value::as_str);
         assert_eq!(top("description"), Some("after"));
         assert_eq!(top("name"), Some("Renamed"));
+    }
+
+    #[test]
+    fn test_trigger_on_a_list_fires_if_any_element_matches() {
+        let raw = r#"
+Test:
+  mode: [hard, easy]
+  difficulty: [normal, easy]
+  death_link: false
+  goal: beat_the_game
+  triggers:
+    - option_category: Test
+      option_name: mode
+      option_result: hard
+      options:
+        Test:
+          death_link: true
+    - option_category: Test
+      option_name: difficulty
+      option_result: hard
+      options:
+        Test:
+          goal: never
+"#;
+        let resolved = resolve_triggers(&parse_yaml(raw));
+        assert_eq!(
+            game_option(&resolved, "Test", "death_link").as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            game_option(&resolved, "Test", "goal").as_str(),
+            Some("beat_the_game")
+        );
     }
 
     #[test]
