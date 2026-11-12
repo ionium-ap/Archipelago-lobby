@@ -1680,6 +1680,18 @@ select.base-select
   margin-left: auto
   color: hsl(0, 0%, 80%)
 
+// On a narrow page the tables scroll sideways instead of squashing their text columns:
+// `.styled` lets words break anywhere, which lets a column shrink to one character wide
+.review-table-scroll
+  overflow-x: auto
+
+  table.styled
+    word-break: normal
+    overflow-wrap: break-word
+
+    th:not(.shrink)
+      min-width: 8em
+
 .review-flag-list
   line-height: 1.9
 
